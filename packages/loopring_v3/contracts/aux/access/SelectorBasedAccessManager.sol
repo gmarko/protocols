@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 pragma solidity ^0.7.0;
 
 import "../../core/iface/IExchangeV3.sol";
@@ -17,6 +18,11 @@ contract SelectorBasedAccessManager is Claimable
         address indexed user,
         bytes4  indexed selector,
         bool            allowed
+    );
+
+    event TargetCalled(
+        address target,
+        bytes data
     );
 
     address public immutable target;
@@ -67,6 +73,8 @@ contract SelectorBasedAccessManager is Claimable
         if (!success) {
             assembly { revert(add(returnData, 32), mload(returnData)) }
         }
+
+        emit TargetCalled(target, data);
     }
 
     function hasAccessTo(address user, bytes4 selector)

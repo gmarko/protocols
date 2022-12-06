@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 #ifndef _ACCOUNTUPDATECIRCUIT_H_
 #define _ACCOUNTUPDATECIRCUIT_H_
 
@@ -16,7 +17,21 @@ using namespace ethsnarks;
 
 namespace Loopring
 {
-
+/**
+ Registration Process Improvement Goals: 
+  1. Offer free user registration
+  2. Reduce the user registration cost for DeGate
+  3. Offer instinctive user registration 
+  4. Account ID should NOT be wasted
+ Design: 
+  1. A user sends AccountUpdate transaction to DeGate during registration
+  2. DeGate will not assign account ID or send AccountUpdate to the circuit until the user make their first deposit
+  3. Upon the completion of the user’s first deposit or internal transfer, DeGate will
+    3.1 assign user account id
+    3.2 send AccountUpdate, and Deposit(or InternalTransfer) to circuit in sequence
+ Changes we made: 
+  1. Allow AccountUpdate to have account id 0
+*/ 
 class AccountUpdateCircuit : public BaseTransactionCircuit
 {
   public:
@@ -30,7 +45,17 @@ class AccountUpdateCircuit : public BaseTransactionCircuit
     DualVariableGadget feeTokenID;
     DualVariableGadget fee;
     DualVariableGadget maxFee;
+    // There are two forms of account update signatures
+    // type == 0: EDDSA signature, we do verification in circuit 
+    // type == 1: ECDSA signature, we do verification within smart contract
     DualVariableGadget type;
+    EqualGadget isAccountUpdateTx;
+    // type must be 1
+    IfThenRequireEqualGadget requireEcdsaType;
+    // registration optimization, nonce equal to 0
+    EqualGadget nonce_eq_zero;
+    TernaryGadget accountIDToHash;
+    ToBitsGadget accountIDToPubData;
 
     // Signature
     Poseidon_8 hash;
@@ -40,8 +65,11 @@ class AccountUpdateCircuit : public BaseTransactionCircuit
     RequireLtGadget requireValidUntil;
     RequireLeqGadget requireValidFee;
 
-    // Type
+    // isConditional == true: type == 1
+    // isConditional == false: type == 0
     IsNonZero isConditional;
+    // needsSignature == true: isConditional == false, type == 0
+    // needsSignature == false: isConditional == true, type == 1
     NotGadget needsSignature;
 
     // Compress the public key
@@ -79,18 +107,36 @@ class AccountUpdateCircuit : public BaseTransactionCircuit
           maxFee(pb, NUM_BITS_AMOUNT, FMT(prefix, ".maxFee")),
           type(pb, NUM_BITS_TYPE, FMT(prefix, ".type")),
 
+          // Check if the inputs are valid
+          isAccountUpdateTx(
+            pb,
+            state.type,
+            state.constants.accountUpdateType,
+            FMT(prefix, ".isAccountUpdateTx")),
+          requireEcdsaType(pb, isAccountUpdateTx.result(), type.packed, state.constants._1, FMT(prefix, ".requireEcdsaType")),
+          nonce_eq_zero(pb, nonce.packed, state.constants._0, FMT(prefix, ".nonce equal 0")),
+          accountIDToHash(
+            pb,
+            nonce_eq_zero.result(),
+            state.constants._0,
+            accountID.packed,
+            FMT(prefix, ".accountIDToHash if nonce equal zero then return 0, otherwise return accountID")),
+          accountIDToPubData(pb, accountIDToHash.result(), NUM_BITS_ACCOUNT, FMT(prefix, ".accountIDToPubData")),
+
           // Signature
           hash(
             pb,
-            var_array(
-              {state.exchange,
-               accountID.packed,
-               feeTokenID.packed,
-               maxFee.packed,
-               publicKeyX,
-               publicKeyY,
-               validUntil.packed,
-               nonce.packed}),
+            var_array({
+              state.exchange,
+              // login optimization, accountIDToHash instead of accountID, if nonce_eq_zero == 1, then accountIDToHash = 0, else accountIDToHash = accountID
+              accountIDToHash.result(),
+              feeTokenID.packed,
+              maxFee.packed,
+              publicKeyX,
+              publicKeyY,
+              validUntil.packed,
+              nonce.packed
+            }),
             FMT(this->annotation_prefix, ".hash")),
 
           // Validate
@@ -145,6 +191,7 @@ class AccountUpdateCircuit : public BaseTransactionCircuit
             isConditional.result(),
             FMT(prefix, ".numConditionalTransactionsAfter"))
     {
+        LOG(LogDebug, "in AccountUpdateCircuit", "");
         // Update the account data
         setArrayOutput(TXV_ACCOUNT_A_ADDRESS, accountID.bits);
         setOutput(TXV_ACCOUNT_A_OWNER, owner.packed);
@@ -156,9 +203,11 @@ class AccountUpdateCircuit : public BaseTransactionCircuit
         setArrayOutput(TXV_BALANCE_A_S_ADDRESS, feeTokenID.bits);
         setOutput(TXV_BALANCE_A_S_BALANCE, balanceS_A.balance());
         // Update the operator balance for the fee payment
+        setArrayOutput(TXV_BALANCE_O_B_Address, feeTokenID.bits);
         setOutput(TXV_BALANCE_O_B_BALANCE, balanceB_O.balance());
 
-        // We need a single signature of the account that's being updated if not
+        // isConditional == false, type == 0, needsSignature == true: EDDSA signature, circuit verification required
+        // isConditional == true, type == 1, needsSignature == false: ECDSA signature, smart contract verification required
         // conditional
         setOutput(TXV_HASH_A, hash.result());
         setOutput(TXV_SIGNATURE_REQUIRED_A, needsSignature.result());
@@ -170,6 +219,7 @@ class AccountUpdateCircuit : public BaseTransactionCircuit
 
     void generate_r1cs_witness(const AccountUpdateTx &update)
     {
+        LOG(LogDebug, "in AccountUpdateCircuit", "generate_r1cs_witness");
         // Inputs
         owner.generate_r1cs_witness(pb, update.owner);
         accountID.generate_r1cs_witness(pb, update.accountID);
@@ -181,6 +231,12 @@ class AccountUpdateCircuit : public BaseTransactionCircuit
         fee.generate_r1cs_witness(pb, update.fee);
         maxFee.generate_r1cs_witness(pb, update.maxFee);
         type.generate_r1cs_witness(pb, update.type);
+
+        isAccountUpdateTx.generate_r1cs_witness();
+        requireEcdsaType.generate_r1cs_witness();
+        nonce_eq_zero.generate_r1cs_witness();
+        accountIDToHash.generate_r1cs_witness();
+        accountIDToPubData.generate_r1cs_witness();
 
         // Signature
         hash.generate_r1cs_witness();
@@ -214,6 +270,7 @@ class AccountUpdateCircuit : public BaseTransactionCircuit
 
     void generate_r1cs_constraints()
     {
+        LOG(LogDebug, "in AccountUpdateCircuit", "generate_r1cs_constraints");
         // Inputs
         owner.generate_r1cs_constraints();
         accountID.generate_r1cs_constraints(true);
@@ -223,6 +280,12 @@ class AccountUpdateCircuit : public BaseTransactionCircuit
         fee.generate_r1cs_constraints(true);
         maxFee.generate_r1cs_constraints(true);
         type.generate_r1cs_constraints(true);
+
+        isAccountUpdateTx.generate_r1cs_constraints();
+        requireEcdsaType.generate_r1cs_constraints();
+        nonce_eq_zero.generate_r1cs_constraints();
+        accountIDToHash.generate_r1cs_constraints();
+        accountIDToPubData.generate_r1cs_constraints();
 
         // Signature
         hash.generate_r1cs_constraints();
@@ -256,14 +319,16 @@ class AccountUpdateCircuit : public BaseTransactionCircuit
 
     const VariableArrayT getPublicData() const
     {
-        return flattenReverse(
-          {type.bits,
-           owner.bits,
-           accountID.bits,
-           feeTokenID.bits,
-           fFee.bits(),
-           compressPublicKey.result(),
-           nonce.bits});
+        return flattenReverse({
+          type.bits,
+          owner.bits,
+          accountIDToPubData.bits,
+          feeTokenID.bits,
+          fFee.bits(),
+          compressPublicKey.result(),
+          nonce.bits,
+          accountID.bits
+        });
     }
 };
 

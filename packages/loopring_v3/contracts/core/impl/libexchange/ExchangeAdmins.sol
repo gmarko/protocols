@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 pragma solidity ^0.7.0;
 pragma experimental ABIEncoderV2;
 
@@ -60,7 +61,7 @@ library ExchangeAdmins
         require(!S.isInWithdrawalMode(), "CANNOT_BE_IN_WITHDRAWAL_MODE");
 
         // Need to remain in shutdown for some time
-        require(block.timestamp >= S.shutdownModeStartTime + ExchangeData.MIN_TIME_IN_SHUTDOWN, "TOO_EARLY");
+        require(block.timestamp >= S.modeTime.shutdownModeStartTime + ExchangeData.MIN_TIME_IN_SHUTDOWN, "TOO_EARLY");
 
         // Withdraw the complete stake
         uint amount = S.loopring.getExchangeStake(address(this));

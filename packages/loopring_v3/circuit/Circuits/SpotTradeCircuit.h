@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 #ifndef _SPOTTRADECIRCUIT_H_
 #define _SPOTTRADECIRCUIT_H_
 
@@ -18,6 +19,8 @@ namespace Loopring
 class SpotTradeCircuit : public BaseTransactionCircuit
 {
   public:
+    DualVariableGadget typeTx;
+    DualVariableGadget typeTxPad;
     // Orders
     OrderGadget orderA;
     OrderGadget orderB;
@@ -27,19 +30,33 @@ class SpotTradeCircuit : public BaseTransactionCircuit
     DynamicBalanceGadget balanceB_A;
     DynamicBalanceGadget balanceS_B;
     DynamicBalanceGadget balanceB_B;
-    DynamicBalanceGadget balanceA_P;
-    DynamicBalanceGadget balanceB_P;
     DynamicBalanceGadget balanceA_O;
     DynamicBalanceGadget balanceB_O;
+    DynamicBalanceGadget balanceC_O;
+    DynamicBalanceGadget balanceD_O;
+
+    DynamicBalanceGadget balanceFee_A;
+    DynamicBalanceGadget balanceFee_B;
 
     // Order fills
     FloatGadget fillS_A;
     FloatGadget fillS_B;
 
-    // Trade history
+    RangeCheckGadget checkFillS_A;
+    RangeCheckGadget checkFillS_B;
+
     EqualGadget isSpotTradeTx;
+    // read history data on storage node
     StorageReaderGadget tradeHistory_A;
     StorageReaderGadget tradeHistory_B;
+
+    AutoMarketOrderCheck autoMarketOrderCheckA;
+    AutoMarketOrderCheck autoMarketOrderCheckB;
+
+    // Once grid order is matched, the data and gasFee fields should be reset
+    StorageReaderForAutoMarketGadget tradeHistoryWithAutoMarket_A;
+    StorageReaderForAutoMarketGadget tradeHistoryWithAutoMarket_B;
+
 
     // Match orders
     OrderMatchingGadget orderMatching;
@@ -52,15 +69,21 @@ class SpotTradeCircuit : public BaseTransactionCircuit
     // Actual trade
     TransferGadget fillSA_from_balanceSA_to_balanceBB;
     TransferGadget fillSB_from_balanceSB_to_balanceBA;
-    // Fees
-    TransferGadget feeA_from_balanceBA_to_balanceAO;
-    TransferGadget feeB_from_balanceBB_to_balanceBO;
-    // Protocol fees
-    TransferGadget protocolFeeA_from_balanceAO_to_balanceAP;
-    TransferGadget protocolFeeB_from_balanceBO_to_balanceBP;
 
-    // AMM validation
-    ValidateAMMGadget validateAMM;
+    TransferGadget feeA_from_accountA_fee_to_balanceAO;
+    TransferGadget feeB_from_accountB_fee_to_balanceBO;
+    // Trading fees
+    TransferGadget protocolFeeA_from_balanceBA_to_balanceAP;
+    TransferGadget protocolFeeB_from_balanceBB_to_balanceBP;
+
+    GasFeeMatchingGadget feeMatch_A;
+    GasFeeMatchingGadget feeMatch_B;
+
+    TernaryGadget resolvedAAuthorX;
+    TernaryGadget resolvedAAuthorY;
+
+    TernaryGadget resolvedBAuthorX;
+    TernaryGadget resolvedBAuthorY;
 
     SpotTradeCircuit( //
       ProtoboardT &pb,
@@ -68,26 +91,34 @@ class SpotTradeCircuit : public BaseTransactionCircuit
       const std::string &prefix)
         : BaseTransactionCircuit(pb, state, prefix),
 
+          typeTx(pb, NUM_BITS_TX_TYPE, FMT(prefix, ".typeTx")),
+          typeTxPad(pb, NUM_BITS_BIT, FMT(prefix, ".typeTxPad")),
           // Orders
-          orderA(pb, state.constants, state.exchange, FMT(prefix, ".orderA")),
-          orderB(pb, state.constants, state.exchange, FMT(prefix, ".orderB")),
+          orderA(pb, state.constants, state.exchange, state.protocolFeeBips, state.constants._1, state.accountA.account.disableAppKeySpotTrade, FMT(prefix, ".orderA")),
+          orderB(pb, state.constants, state.exchange, state.protocolFeeBips, state.constants._1, state.accountB.account.disableAppKeySpotTrade, FMT(prefix, ".orderB")),
 
           // Balances
           balanceS_A(pb, state.accountA.balanceS, FMT(prefix, ".balanceS_A")),
           balanceB_A(pb, state.accountA.balanceB, FMT(prefix, ".balanceB_A")),
           balanceS_B(pb, state.accountB.balanceS, FMT(prefix, ".balanceS_B")),
           balanceB_B(pb, state.accountB.balanceB, FMT(prefix, ".balanceB_B")),
-          balanceA_P(pb, state.pool.balanceA, FMT(prefix, ".balanceA_P")),
-          balanceB_P(pb, state.pool.balanceB, FMT(prefix, ".balanceB_P")),
+          balanceC_O(pb, state.oper.balanceC, FMT(prefix, ".balanceC_O")),
+          balanceD_O(pb, state.oper.balanceD, FMT(prefix, ".balanceD_O")),
           balanceA_O(pb, state.oper.balanceA, FMT(prefix, ".balanceA_O")),
           balanceB_O(pb, state.oper.balanceB, FMT(prefix, ".balanceB_O")),
 
-          // Order fills
-          fillS_A(pb, state.constants, Float24Encoding, FMT(prefix, ".fillS_A")),
-          fillS_B(pb, state.constants, Float24Encoding, FMT(prefix, ".fillS_B")),
+          balanceFee_A(pb, state.accountA.balanceFee, FMT(prefix, ".balanceFee_A")),
+          balanceFee_B(pb, state.accountB.balanceFee, FMT(prefix, ".balanceFee_B")),
 
-          // Trade history
+          // Order fills
+          fillS_A(pb, state.constants, Float32Encoding, FMT(prefix, ".fillS_A")),
+          fillS_B(pb, state.constants, Float32Encoding, FMT(prefix, ".fillS_B")),
+
+          checkFillS_A(pb, fillS_A.value(), NUM_BITS_AMOUNT, FMT(prefix, ".checkFillS_A")),
+          checkFillS_B(pb, fillS_B.value(), NUM_BITS_AMOUNT, FMT(prefix, ".checkFillS_B")),
+
           isSpotTradeTx(pb, state.type, state.constants.txTypeSpotTrade, FMT(prefix, ".isSpotTradeTx")),
+          // Trade history
           tradeHistory_A(
             pb,
             state.constants,
@@ -103,6 +134,11 @@ class SpotTradeCircuit : public BaseTransactionCircuit
             isSpotTradeTx.result(),
             FMT(prefix, ".tradeHistoryB")),
 
+          autoMarketOrderCheckA(pb, state.constants, state.timestamp, state.exchange, orderA, tradeHistory_A, FMT(prefix, ".autoMarketOrderCheckA")),
+          autoMarketOrderCheckB(pb, state.constants, state.timestamp, state.exchange, orderB, tradeHistory_B, FMT(prefix, ".autoMarketOrderCheckB")),
+
+          tradeHistoryWithAutoMarket_A(pb, state.constants, tradeHistory_A, autoMarketOrderCheckA.isNewOrder(), FMT(prefix, ".tradeHistoryWithAutoMarket_A")),
+          tradeHistoryWithAutoMarket_B(pb, state.constants, tradeHistory_B, autoMarketOrderCheckB.isNewOrder(), FMT(prefix, ".tradeHistoryWithAutoMarket_B")),
           // Match orders
           orderMatching(
             pb,
@@ -112,25 +148,25 @@ class SpotTradeCircuit : public BaseTransactionCircuit
             orderB,
             state.accountA.account.owner,
             state.accountB.account.owner,
-            tradeHistory_A.getData(),
-            tradeHistory_B.getData(),
+            tradeHistoryWithAutoMarket_A.getData(),
+            tradeHistoryWithAutoMarket_B.getData(),
+            tradeHistory_A.getCancelled(),
+            tradeHistory_B.getCancelled(),
             fillS_A.value(),
             fillS_B.value(),
+            isSpotTradeTx.result(),
             FMT(prefix, ".orderMatching")),
-
           // Calculate fees
           feeCalculatorA(
             pb,
             state.constants,
             fillS_B.value(),
-            state.protocolTakerFeeBips,
             orderA.feeBips.packed,
             FMT(prefix, ".feeCalculatorA")),
           feeCalculatorB(
             pb,
             state.constants,
             fillS_A.value(),
-            state.protocolMakerFeeBips,
             orderB.feeBips.packed,
             FMT(prefix, ".feeCalculatorB")),
 
@@ -148,96 +184,139 @@ class SpotTradeCircuit : public BaseTransactionCircuit
             balanceB_A,
             fillS_B.value(),
             FMT(prefix, ".fillSB_from_balanceSB_to_balanceBA")),
-          // Fees
-          feeA_from_balanceBA_to_balanceAO(
+          // gas fee
+          // pay gas fee and trading fee to operator
+          // order A pay gas fee
+          feeA_from_accountA_fee_to_balanceAO(
+            pb,
+            balanceFee_A,
+            balanceA_O,
+            orderA.fFee.value(),
+            FMT(prefix, ".feeA_from_accountA_fee_to_balanceAO")),
+          // order B pay gas fee
+          feeB_from_accountB_fee_to_balanceBO(
+            pb,
+            balanceFee_B,
+            balanceB_O,
+            orderB.fFee.value(),
+            FMT(prefix, ".feeB_from_accountB_fee_to_balanceBO")),
+          
+          // pay trading fee, trading fee deduct from the tokenB
+          protocolFeeA_from_balanceBA_to_balanceAP(
             pb,
             balanceB_A,
-            balanceA_O,
+            balanceC_O,
             feeCalculatorA.getFee(),
-            FMT(prefix, ".feeA_from_balanceBA_to_balanceAO")),
-          feeB_from_balanceBB_to_balanceBO(
+            FMT(prefix, ".protocolFeeA_from_balanceBA_to_balanceAP")),
+          protocolFeeB_from_balanceBB_to_balanceBP(
             pb,
             balanceB_B,
-            balanceB_O,
+            balanceD_O,
             feeCalculatorB.getFee(),
-            FMT(prefix, ".feeB_from_balanceBB_to_balanceBO")),
-          // Protocol fees
-          protocolFeeA_from_balanceAO_to_balanceAP(
-            pb,
-            balanceA_O,
-            balanceA_P,
-            feeCalculatorA.getProtocolFee(),
-            FMT(prefix, ".protocolFeeA_from_balanceAO_to_balanceAP")),
-          protocolFeeB_from_balanceBO_to_balanceBP(
-            pb,
-            balanceB_O,
-            balanceB_P,
-            feeCalculatorB.getProtocolFee(),
-            FMT(prefix, ".protocolFeeB_from_balanceBO_to_balanceBP")),
+            FMT(prefix, ".protocolFeeB_from_balanceBB_to_balanceBP")),
 
-          validateAMM(
+          feeMatch_A(pb, state.constants, orderA.fee.packed, tradeHistoryWithAutoMarket_A.getGasFee(), orderA.maxFee.packed, state.constants._0, state.constants._0, isSpotTradeTx.result(), FMT(prefix, ".fee match A")),
+          feeMatch_B(pb, state.constants, orderB.fee.packed, tradeHistoryWithAutoMarket_B.getGasFee(), orderB.maxFee.packed, state.constants._0, state.constants._0, isSpotTradeTx.result(), FMT(prefix, ".fee match B")),
+
+          resolvedAAuthorX(
             pb,
-            state.constants,
-            {orderA.amm.packed,
-             orderA.feeBips.packed,
-             fillS_A.value(),
-             state.accountA.balanceS.balance,
-             state.accountA.balanceB.balance,
-             balanceS_A.balance(),
-             balanceB_A.balance(),
-             state.accountA.balanceS.weightAMM,
-             state.accountA.balanceB.weightAMM,
-             state.accountA.account.feeBipsAMM},
-            {orderB.amm.packed,
-             orderB.feeBips.packed,
-             fillS_B.value(),
-             state.accountB.balanceS.balance,
-             state.accountB.balanceB.balance,
-             balanceS_B.balance(),
-             balanceB_B.balance(),
-             state.accountB.balanceS.weightAMM,
-             state.accountB.balanceB.weightAMM,
-             state.accountB.account.feeBipsAMM},
-            FMT(prefix, ".validateAMM"))
+            orderA.useAppKey.packed,
+            state.accountA.account.appKeyPublicKey.x,
+            state.accountA.account.publicKey.x,
+            FMT(prefix, ".resolvedAAuthorX")),
+          resolvedAAuthorY(
+            pb,
+            orderA.useAppKey.packed,
+            state.accountA.account.appKeyPublicKey.y,
+            state.accountA.account.publicKey.y,
+            FMT(prefix, ".resolvedAAuthorY")),
+
+          resolvedBAuthorX(
+            pb,
+            orderB.useAppKey.packed,
+            state.accountB.account.appKeyPublicKey.x,
+            state.accountB.account.publicKey.x,
+            FMT(prefix, ".resolvedBAuthorX")),
+          resolvedBAuthorY(
+            pb,
+            orderB.useAppKey.packed,
+            state.accountB.account.appKeyPublicKey.y,
+            state.accountB.account.publicKey.y,
+            FMT(prefix, ".resolvedBAuthorY"))
     {
+        LOG(LogDebug, "in SpotTradeCircuit", "");
         // Set tokens
         setArrayOutput(TXV_BALANCE_A_S_ADDRESS, orderA.tokenS.bits);
+        setArrayOutput(TXV_BALANCE_A_B_ADDRESS, orderA.tokenB.bits);
         setArrayOutput(TXV_BALANCE_B_S_ADDRESS, orderB.tokenS.bits);
+        setArrayOutput(TXV_BALANCE_B_B_ADDRESS, orderB.tokenB.bits);
 
         // Update account A
         setArrayOutput(TXV_STORAGE_A_ADDRESS, subArray(orderA.storageID.bits, 0, NUM_BITS_STORAGE_ADDRESS));
+
+        setOutput(TXV_STORAGE_A_TOKENSID, autoMarketOrderCheckA.getTokenSIDForStorageUpdate());
+        setOutput(TXV_STORAGE_A_TOKENBID, autoMarketOrderCheckA.getTokenBIDForStorageUpdate());
         setOutput(TXV_STORAGE_A_DATA, orderMatching.getFilledAfter_A());
         setOutput(TXV_STORAGE_A_STORAGEID, orderA.storageID.packed);
+        setOutput(TXV_STORAGE_A_GASFEE, feeMatch_A.getFeeSum());
+        setOutput(TXV_STORAGE_A_CANCELLED, tradeHistory_A.getCancelled());
+        setOutput(TXV_STORAGE_A_FORWARD, autoMarketOrderCheckA.getNewForwardForStorageUpdate());
+
         setOutput(TXV_BALANCE_A_S_BALANCE, balanceS_A.balance());
         setOutput(TXV_BALANCE_A_B_BALANCE, balanceB_A.balance());
+        setOutput(TXV_BALANCE_A_FEE_BALANCE, balanceFee_A.balance());
+
         setArrayOutput(TXV_ACCOUNT_A_ADDRESS, orderA.accountID.bits);
 
         // Update account B
         setArrayOutput(TXV_STORAGE_B_ADDRESS, subArray(orderB.storageID.bits, 0, NUM_BITS_STORAGE_ADDRESS));
+
+        setOutput(TXV_STORAGE_B_TOKENSID, autoMarketOrderCheckB.getTokenSIDForStorageUpdate());
+        setOutput(TXV_STORAGE_B_TOKENBID, autoMarketOrderCheckB.getTokenBIDForStorageUpdate());
         setOutput(TXV_STORAGE_B_DATA, orderMatching.getFilledAfter_B());
         setOutput(TXV_STORAGE_B_STORAGEID, orderB.storageID.packed);
+        setOutput(TXV_STORAGE_B_GASFEE, feeMatch_B.getFeeSum());
+        setOutput(TXV_STORAGE_B_CANCELLED, tradeHistory_B.getCancelled());
+        setOutput(TXV_STORAGE_B_FORWARD, autoMarketOrderCheckB.getNewForwardForStorageUpdate());
+
         setOutput(TXV_BALANCE_B_S_BALANCE, balanceS_B.balance());
         setOutput(TXV_BALANCE_B_B_BALANCE, balanceB_B.balance());
+        setOutput(TXV_BALANCE_B_FEE_BALANCE, balanceFee_B.balance());
+
         setArrayOutput(TXV_ACCOUNT_B_ADDRESS, orderB.accountID.bits);
 
-        // Update balances of the protocol fee pool
-        setOutput(TXV_BALANCE_P_A_BALANCE, balanceA_P.balance());
-        setOutput(TXV_BALANCE_P_B_BALANCE, balanceB_P.balance());
+        setArrayOutput(TXV_BALANCE_O_C_Address, orderB.tokenS.bits);
+        setArrayOutput(TXV_BALANCE_O_D_Address, orderA.tokenS.bits);
 
-        // Update the balance of the operator
+        setOutput(TXV_BALANCE_O_C_BALANCE, balanceC_O.balance());
+        setOutput(TXV_BALANCE_O_D_BALANCE, balanceD_O.balance());
+
+        setArrayOutput(TXV_BALANCE_O_A_Address, orderA.feeTokenID.bits);
+        setArrayOutput(TXV_BALANCE_O_B_Address, orderB.feeTokenID.bits);
+
+        setArrayOutput(TXV_BALANCE_A_FEE_Address, orderA.feeTokenID.bits);
+        setArrayOutput(TXV_BALANCE_B_FEE_Address, orderB.feeTokenID.bits);
+
         setOutput(TXV_BALANCE_O_A_BALANCE, balanceA_O.balance());
         setOutput(TXV_BALANCE_O_B_BALANCE, balanceB_O.balance());
 
-        // A signature is required for each order that isn't an AMM
-        setOutput(TXV_HASH_A, orderA.hash.result());
-        setOutput(TXV_HASH_B, orderB.hash.result());
+        // A signature is required for each order
+        setOutput(TXV_HASH_A, autoMarketOrderCheckA.getVerifyHash());
+        setOutput(TXV_HASH_B, autoMarketOrderCheckB.getVerifyHash());
 
-        setOutput(TXV_SIGNATURE_REQUIRED_A, orderA.notAmm.result());
-        setOutput(TXV_SIGNATURE_REQUIRED_B, orderB.notAmm.result());
+        setOutput(TXV_PUBKEY_X_A, resolvedAAuthorX.result());
+        setOutput(TXV_PUBKEY_Y_A, resolvedAAuthorY.result());
+        setOutput(TXV_PUBKEY_X_B, resolvedBAuthorX.result());
+        setOutput(TXV_PUBKEY_Y_B, resolvedBAuthorY.result());
+        setOutput(TXV_SIGNATURE_REQUIRED_A, state.constants._1);
+        setOutput(TXV_SIGNATURE_REQUIRED_B, state.constants._1);
     }
 
     void generate_r1cs_witness(const SpotTrade &spotTrade)
     {
+        LOG(LogDebug, "in SpotTradeCircuit", "generate_r1cs_witness");
+        typeTx.generate_r1cs_witness(pb, ethsnarks::FieldT(int(Loopring::TransactionType::SpotTrade)));
+        typeTxPad.generate_r1cs_witness(pb, ethsnarks::FieldT(0));
         // Orders
         orderA.generate_r1cs_witness(spotTrade.orderA);
         orderB.generate_r1cs_witness(spotTrade.orderB);
@@ -247,19 +326,32 @@ class SpotTradeCircuit : public BaseTransactionCircuit
         balanceB_A.generate_r1cs_witness();
         balanceS_B.generate_r1cs_witness();
         balanceB_B.generate_r1cs_witness();
-        balanceA_P.generate_r1cs_witness();
-        balanceB_P.generate_r1cs_witness();
+
+        balanceC_O.generate_r1cs_witness();
+        balanceD_O.generate_r1cs_witness();
         balanceA_O.generate_r1cs_witness();
         balanceB_O.generate_r1cs_witness();
+
+        balanceFee_A.generate_r1cs_witness();
+        balanceFee_B.generate_r1cs_witness();
 
         // Order fills
         fillS_A.generate_r1cs_witness(spotTrade.fillS_A);
         fillS_B.generate_r1cs_witness(spotTrade.fillS_B);
 
-        // Trade history
+        checkFillS_A.generate_r1cs_witness();
+        checkFillS_B.generate_r1cs_witness();
+
         isSpotTradeTx.generate_r1cs_witness();
+        // Trade history
         tradeHistory_A.generate_r1cs_witness();
         tradeHistory_B.generate_r1cs_witness();
+
+        autoMarketOrderCheckA.generate_r1cs_witness(spotTrade.orderA.startOrder);
+        autoMarketOrderCheckB.generate_r1cs_witness(spotTrade.orderB.startOrder);
+
+        tradeHistoryWithAutoMarket_A.generate_r1cs_witness();
+        tradeHistoryWithAutoMarket_B.generate_r1cs_witness();
 
         // Match orders
         orderMatching.generate_r1cs_witness();
@@ -273,18 +365,28 @@ class SpotTradeCircuit : public BaseTransactionCircuit
         fillSA_from_balanceSA_to_balanceBB.generate_r1cs_witness();
         fillSB_from_balanceSB_to_balanceBA.generate_r1cs_witness();
         // Fees
-        feeA_from_balanceBA_to_balanceAO.generate_r1cs_witness();
-        feeB_from_balanceBB_to_balanceBO.generate_r1cs_witness();
-        // Protocol fees
-        protocolFeeA_from_balanceAO_to_balanceAP.generate_r1cs_witness();
-        protocolFeeB_from_balanceBO_to_balanceBP.generate_r1cs_witness();
+        feeA_from_accountA_fee_to_balanceAO.generate_r1cs_witness();
+        feeB_from_accountB_fee_to_balanceBO.generate_r1cs_witness();
 
-        // AMM validation
-        validateAMM.generate_r1cs_witness();
+        // trading fees
+        protocolFeeA_from_balanceBA_to_balanceAP.generate_r1cs_witness();
+        protocolFeeB_from_balanceBB_to_balanceBP.generate_r1cs_witness();
+
+        feeMatch_A.generate_r1cs_witness();
+        feeMatch_B.generate_r1cs_witness();
+
+        resolvedAAuthorX.generate_r1cs_witness();
+        resolvedAAuthorY.generate_r1cs_witness();
+        resolvedBAuthorX.generate_r1cs_witness();
+        resolvedBAuthorY.generate_r1cs_witness();
+        LOG(LogDebug, "in SpotTradeCircuit", "end");
     }
 
     void generate_r1cs_constraints()
     {
+        LOG(LogDebug, "in SpotTradeCircuit", "generate_r1cs_constraints");
+        typeTx.generate_r1cs_constraints(true);
+        typeTxPad.generate_r1cs_constraints(true);
         // Orders
         orderA.generate_r1cs_constraints();
         orderB.generate_r1cs_constraints();
@@ -294,23 +396,34 @@ class SpotTradeCircuit : public BaseTransactionCircuit
         balanceB_A.generate_r1cs_constraints();
         balanceS_B.generate_r1cs_constraints();
         balanceB_B.generate_r1cs_constraints();
-        balanceA_P.generate_r1cs_constraints();
-        balanceB_P.generate_r1cs_constraints();
+
+        balanceC_O.generate_r1cs_constraints();
+        balanceD_O.generate_r1cs_constraints();
         balanceA_O.generate_r1cs_constraints();
         balanceB_O.generate_r1cs_constraints();
+
+        balanceFee_A.generate_r1cs_constraints();
+        balanceFee_B.generate_r1cs_constraints();
 
         // Order fills
         fillS_A.generate_r1cs_constraints();
         fillS_B.generate_r1cs_constraints();
 
-        // Trade history
+        checkFillS_A.generate_r1cs_constraints();
+        checkFillS_B.generate_r1cs_constraints();
+
         isSpotTradeTx.generate_r1cs_constraints();
+        // Trade history
         tradeHistory_A.generate_r1cs_constraints();
         tradeHistory_B.generate_r1cs_constraints();
 
+        autoMarketOrderCheckA.generate_r1cs_constraints();
+        autoMarketOrderCheckB.generate_r1cs_constraints();
+
+        tradeHistoryWithAutoMarket_A.generate_r1cs_constraints();
+        tradeHistoryWithAutoMarket_B.generate_r1cs_constraints();
         // Match orders
         orderMatching.generate_r1cs_constraints();
-
         // Calculate fees
         feeCalculatorA.generate_r1cs_constraints();
         feeCalculatorB.generate_r1cs_constraints();
@@ -319,22 +432,28 @@ class SpotTradeCircuit : public BaseTransactionCircuit
         // Actual trade
         fillSA_from_balanceSA_to_balanceBB.generate_r1cs_constraints();
         fillSB_from_balanceSB_to_balanceBA.generate_r1cs_constraints();
-        // Fees
-        feeA_from_balanceBA_to_balanceAO.generate_r1cs_constraints();
-        feeB_from_balanceBB_to_balanceBO.generate_r1cs_constraints();
-        // Protocol fees
-        protocolFeeA_from_balanceAO_to_balanceAP.generate_r1cs_constraints();
-        protocolFeeB_from_balanceBO_to_balanceBP.generate_r1cs_constraints();
+        // Fees gas fee
+        feeA_from_accountA_fee_to_balanceAO.generate_r1cs_constraints();
+        feeB_from_accountB_fee_to_balanceBO.generate_r1cs_constraints();
 
-        // AMM validation
-        validateAMM.generate_r1cs_constraints();
+        // trading fees
+        protocolFeeA_from_balanceBA_to_balanceAP.generate_r1cs_constraints();
+        protocolFeeB_from_balanceBB_to_balanceBP.generate_r1cs_constraints();
+
+        feeMatch_A.generate_r1cs_constraints();
+        feeMatch_B.generate_r1cs_constraints();
+
+        resolvedAAuthorX.generate_r1cs_constraints();
+        resolvedAAuthorY.generate_r1cs_constraints();
+        resolvedBAuthorX.generate_r1cs_constraints();
+        resolvedBAuthorY.generate_r1cs_constraints();
     }
 
     const VariableArrayT getPublicData() const
     {
         return flattenReverse({
-          orderA.storageID.bits,
-          orderB.storageID.bits,
+          typeTx.bits,
+          typeTxPad.bits,
 
           orderA.accountID.bits,
           orderB.accountID.bits,
@@ -345,13 +464,20 @@ class SpotTradeCircuit : public BaseTransactionCircuit
           fillS_A.bits(),
           fillS_B.bits(),
 
+          orderA.feeTokenID.bits,
+          orderA.fFee.bits(),
+
+          orderB.feeTokenID.bits,
+          orderB.fFee.bits(),
+
           orderA.fillAmountBorS.bits,
           orderA.feeBipsMultiplierFlag.bits,
           orderA.feeBipsData.bits,
           orderB.fillAmountBorS.bits,
           orderB.feeBipsMultiplierFlag.bits,
-          orderB.feeBipsData.bits,
+          orderB.feeBipsData.bits
         });
+        
     }
 };
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 pragma solidity ^0.7.0;
 pragma experimental ABIEncoderV2;
 
@@ -53,7 +54,7 @@ contract FastWithdrawalAgent is ReentrancyGuard, IAgent
         address from,
         address to,
         address token,
-        uint96  amount,
+        uint248  amount,
         address provider,
         bool    success
     );
@@ -64,13 +65,13 @@ contract FastWithdrawalAgent is ReentrancyGuard, IAgent
         address from;                   // The owner of the account
         address to;                     // The `to` address of the withdrawal
         address token;
-        uint96  amount;
+        uint248  amount;
         uint32  storageID;
     }
 
     // This method needs to be called by any liquidity provider
     function executeFastWithdrawals(Withdrawal[] calldata withdrawals)
-        public
+        external
         nonReentrant
         payable
     {

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 pragma solidity ^0.7.0;
 pragma experimental ABIEncoderV2;
 
@@ -23,7 +24,7 @@ library ExchangeMode
         view
         returns (bool result)
     {
-        result = S.withdrawalModeStartTime > 0;
+        result = S.modeTime.withdrawalModeStartTime > 0;
     }
 
     function isShutdown(
@@ -33,7 +34,7 @@ library ExchangeMode
         view
         returns (bool)
     {
-        return S.shutdownModeStartTime > 0;
+        return S.modeTime.shutdownModeStartTime > 0;
     }
 
     function getNumAvailableForcedSlots(

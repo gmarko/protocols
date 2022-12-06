@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 pragma solidity ^0.7.0;
 
 import "../../lib/Claimable.sol";
@@ -22,10 +23,8 @@ abstract contract ILoopringV3 is Claimable
     uint    public totalStake;
     address public blockVerifierAddress;
     uint    public forcedWithdrawalFee;
-    uint    public tokenRegistrationFeeLRCBase;
-    uint    public tokenRegistrationFeeLRCDelta;
-    uint8   public protocolTakerFeeBips;
-    uint8   public protocolMakerFeeBips;
+    uint8   public protocolFeeBips;
+    
 
     address payable public protocolFeeVault;
 
@@ -46,7 +45,6 @@ abstract contract ILoopringV3 is Claimable
     ///      new Loopring exchanges.
     function updateSettings(
         address payable _protocolFeeVault,   // address(0) not allowed
-        address _blockVerifierAddress,       // address(0) not allowed
         uint    _forcedWithdrawalFee
         )
         external
@@ -58,8 +56,7 @@ abstract contract ILoopringV3 is Claimable
     ///      Warning: these new values will be used by existing and
     ///      new Loopring exchanges.
     function updateProtocolFeeSettings(
-        uint8 _protocolTakerFeeBips,
-        uint8 _protocolMakerFeeBips
+        uint8 _protocolFeeBips
         )
         external
         virtual;
@@ -70,7 +67,7 @@ abstract contract ILoopringV3 is Claimable
     function getExchangeStake(
         address exchangeAddr
         )
-        public
+        external
         virtual
         view
         returns (uint stakedLRC);
@@ -112,15 +109,13 @@ abstract contract ILoopringV3 is Claimable
         returns (uint amountLRC);
 
     /// @dev Gets the protocol fee values for an exchange.
-    /// @return takerFeeBips The protocol taker fee
-    /// @return makerFeeBips The protocol maker fee
+    /// @return feeBips The protocol fee
     function getProtocolFeeValues(
         )
-        public
+        external
         virtual
         view
         returns (
-            uint8 takerFeeBips,
-            uint8 makerFeeBips
+            uint8 feeBips
         );
 }

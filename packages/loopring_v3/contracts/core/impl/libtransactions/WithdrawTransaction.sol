@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 pragma solidity ^0.7.0;
 pragma experimental ABIEncoderV2;
 
@@ -28,12 +29,14 @@ library WithdrawTransaction
     using BytesUtil            for bytes;
     using FloatUtil            for uint16;
     using MathUint             for uint;
+    using SafeCast             for uint;
     using ExchangeMode         for ExchangeData.State;
     using ExchangeSignatures   for ExchangeData.State;
     using ExchangeWithdrawals  for ExchangeData.State;
+    using SignatureUtil        for bytes32;
 
     bytes32 constant public WITHDRAWAL_TYPEHASH = keccak256(
-        "Withdrawal(address owner,uint32 accountID,uint16 tokenID,uint96 amount,uint16 feeTokenID,uint96 maxFee,address to,bytes extraData,uint256 minGas,uint32 validUntil,uint32 storageID)"
+        "Withdrawal(address owner,uint32 accountID,uint32 tokenID,uint248 amount,uint32 feeTokenID,uint96 maxFee,address to,uint248 minGas,uint32 validUntil,uint32 storageID)"
     );
 
     struct Withdrawal
@@ -41,14 +44,13 @@ library WithdrawTransaction
         uint    withdrawalType;
         address from;
         uint32  fromAccountID;
-        uint16  tokenID;
-        uint96  amount;
-        uint16  feeTokenID;
+        uint32  tokenID;
+        uint248 amount;
+        uint32  feeTokenID;
         uint96  maxFee;
         uint96  fee;
         address to;
-        bytes   extraData;
-        uint    minGas;
+        uint248 minGas;
         uint32  validUntil;
         uint32  storageID;
         bytes20 onchainDataHash;
@@ -61,11 +63,11 @@ library WithdrawTransaction
         uint  gasLimit;
         bytes signature;
 
-        uint    minGas;
+        uint248 minGas;
         address to;
-        bytes   extraData;
         uint96  maxFee;
         uint32  validUntil;
+        uint248 amount;
     }
 
     function process(
@@ -85,8 +87,9 @@ library WithdrawTransaction
         bytes20 onchainDataHash = hashOnchainData(
             auxData.minGas,
             auxData.to,
-            auxData.extraData
+            auxData.amount
         );
+
         // Only the 20 MSB are used, which is still 80-bit of security, which is more
         // than enough, especially when combined with validUntil.
         require(withdrawal.onchainDataHash == onchainDataHash, "INVALID_WITHDRAWAL_DATA");
@@ -94,9 +97,9 @@ library WithdrawTransaction
         // Fill in withdrawal data missing from DA
         withdrawal.to = auxData.to;
         withdrawal.minGas = auxData.minGas;
-        withdrawal.extraData = auxData.extraData;
-        withdrawal.maxFee = auxData.maxFee == 0 ? withdrawal.fee : auxData.maxFee;
+        withdrawal.maxFee = auxData.maxFee;
         withdrawal.validUntil = auxData.validUntil;
+        withdrawal.amount = auxData.amount;
 
         // If the account has an owner, don't allow withdrawing to the zero address
         // (which will be the protocol fee vault contract).
@@ -122,8 +125,6 @@ library WithdrawTransaction
 
             // Forced withdrawal fees are charged when the request is submitted.
             require(withdrawal.fee == 0, "FEE_NOT_ZERO");
-
-            require(withdrawal.extraData.length == 0, "AUXILIARY_DATA_NOT_ALLOWED");
 
             ExchangeData.ForcedWithdrawal memory forcedWithdrawal =
                 S.pendingForcedWithdrawals[withdrawal.fromAccountID][withdrawal.tokenID];
@@ -156,9 +157,6 @@ library WithdrawTransaction
         // Check if there is a withdrawal recipient
         address recipient = S.withdrawalRecipient[withdrawal.from][withdrawal.to][withdrawal.tokenID][withdrawal.amount][withdrawal.storageID];
         if (recipient != address(0)) {
-            // Auxiliary data is not supported
-            require (withdrawal.extraData.length == 0, "AUXILIARY_DATA_NOT_ALLOWED");
-
             // Set the new recipient address
             withdrawal.to = recipient;
             // Allow any amount of gas to be used on this withdrawal (which allows the transfer to be skipped)
@@ -181,7 +179,6 @@ library WithdrawTransaction
             withdrawal.to,
             withdrawal.tokenID,
             withdrawal.amount,
-            withdrawal.extraData,
             auxData.gasLimit
         );
     }
@@ -196,9 +193,6 @@ library WithdrawTransaction
     {
         uint _offset = offset;
 
-        require(data.toUint8Unsafe(_offset) == uint8(ExchangeData.TransactionType.WITHDRAWAL), "INVALID_TX_TYPE");
-        _offset += 1;
-
         // Extract the transfer data
         // We don't use abi.decode for this because of the large amount of zero-padding
         // bytes the circuit would also have to hash.
@@ -208,12 +202,10 @@ library WithdrawTransaction
         _offset += 20;
         withdrawal.fromAccountID = data.toUint32Unsafe(_offset);
         _offset += 4;
-        withdrawal.tokenID = data.toUint16Unsafe(_offset);
-        _offset += 2;
-        withdrawal.amount = data.toUint96Unsafe(_offset);
-        _offset += 12;
-        withdrawal.feeTokenID = data.toUint16Unsafe(_offset);
-        _offset += 2;
+        withdrawal.tokenID = data.toUint32Unsafe(_offset);
+        _offset += 4;
+        withdrawal.feeTokenID = data.toUint32Unsafe(_offset);
+        _offset += 4;
         withdrawal.fee = data.toUint16Unsafe(_offset).decodeFloat16();
         _offset += 2;
         withdrawal.storageID = data.toUint32Unsafe(_offset);
@@ -226,7 +218,7 @@ library WithdrawTransaction
         bytes32 DOMAIN_SEPARATOR,
         Withdrawal memory withdrawal
         )
-        internal
+        private
         pure
         returns (bytes32)
     {
@@ -242,7 +234,6 @@ library WithdrawTransaction
                     withdrawal.feeTokenID,
                     withdrawal.maxFee,
                     withdrawal.to,
-                    keccak256(withdrawal.extraData),
                     withdrawal.minGas,
                     withdrawal.validUntil,
                     withdrawal.storageID
@@ -252,22 +243,22 @@ library WithdrawTransaction
     }
 
     function hashOnchainData(
-        uint    minGas,
+        uint248 minGas,
         address to,
-        bytes   memory extraData
+        uint248 amount
         )
-        internal
-        pure
+        private
+        view
         returns (bytes20)
     {
         // Only the 20 MSB are used, which is still 80-bit of security, which is more
         // than enough, especially when combined with validUntil.
-        return bytes20(keccak256(
+        return bytes20(
             abi.encodePacked(
                 minGas,
                 to,
-                extraData
-            )
-        ));
+                amount
+            ).fastSHA256()
+        );
     }
 }

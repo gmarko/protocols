@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 #ifndef _INTERNAL_TRANSFER_CIRCUIT_H_
 #define _INTERNAL_TRANSFER_CIRCUIT_H_
 
@@ -35,6 +36,8 @@ namespace Loopring
 class TransferCircuit : public BaseTransactionCircuit
 {
   public:
+    DualVariableGadget typeTx;
+    DualVariableGadget typeTxPad;
     // Inputs
     DualVariableGadget fromAccountID;
     DualVariableGadget toAccountID;
@@ -54,6 +57,8 @@ class TransferCircuit : public BaseTransactionCircuit
     DualVariableGadget payee_toAccountID;
     DualVariableGadget maxFee;
     DualVariableGadget putAddressesInDA;
+    DualVariableGadget useAppKey;
+    ToBitsGadget disableAppKeyTransferToOther;
 
     // Check if the inputs are valid
     EqualGadget isTransferTx;
@@ -70,12 +75,18 @@ class TransferCircuit : public BaseTransactionCircuit
     IsNonZero isNonZero_dualAuthorX;
     IsNonZero isNonZero_dualAuthorY;
     OrGadget isNonZero_dualAuthor;
+    // choose appKey or assetKey
+    TernaryGadget resolvedPayerAuthorX;
+    TernaryGadget resolvedPayerAuthorY;
+
     TernaryGadget resolvedDualAuthorX;
     TernaryGadget resolvedDualAuthorY;
 
+    IfThenRequireEqualGadget ifUseAppKey_then_require_enable_switch;
+
     // Signature
-    Poseidon_12 hashPayer;
-    Poseidon_12 hashDual;
+    Poseidon_13 hashPayer;
+    Poseidon_13 hashDual;
 
     // Balances
     DynamicBalanceGadget balanceS_A;
@@ -89,6 +100,8 @@ class TransferCircuit : public BaseTransactionCircuit
     // Type
     IsNonZero isConditional;
     NotGadget needsSignature;
+    // EDDSA verification only, require type == 0
+    RequireEqualGadget requireEddsaType;
 
     // DA optimization
     OrGadget da_NeedsToAddress;
@@ -96,6 +109,7 @@ class TransferCircuit : public BaseTransactionCircuit
     ArrayTernaryGadget da_To;
     ArrayTernaryGadget da_From;
 
+    StorageReaderGadget storageReader;
     // Fee as float
     FloatGadget fFee;
     RequireAccuracyGadget requireAccuracyFee;
@@ -118,6 +132,8 @@ class TransferCircuit : public BaseTransactionCircuit
       const std::string &prefix)
         : BaseTransactionCircuit(pb, state, prefix),
 
+          typeTx(pb, NUM_BITS_TX_TYPE, FMT(prefix, ".typeTx")),
+          typeTxPad(pb, NUM_BITS_BIT, FMT(prefix, ".typeTxPad")),
           // Inputs
           fromAccountID(pb, NUM_BITS_ACCOUNT, FMT(prefix, ".fromAccountID")),
           toAccountID(pb, NUM_BITS_ACCOUNT, FMT(prefix, ".toAccountID")),
@@ -137,6 +153,8 @@ class TransferCircuit : public BaseTransactionCircuit
           payee_toAccountID(pb, NUM_BITS_ACCOUNT, FMT(prefix, ".payee_toAccountID")),
           maxFee(pb, NUM_BITS_AMOUNT, FMT(prefix, ".maxFee")),
           putAddressesInDA(pb, 1, FMT(prefix, ".putAddressesInDA")),
+          useAppKey(pb, NUM_BITS_BYTE, FMT(prefix, ".useAppKey")),
+          disableAppKeyTransferToOther(pb, state.accountA.account.disableAppKeyTransferToOther, 1, FMT(prefix, ".disableAppKeyTransferToOther")),
 
           // Check if the inputs are valid
           isTransferTx( //
@@ -188,18 +206,36 @@ class TransferCircuit : public BaseTransactionCircuit
             pb,
             {isNonZero_dualAuthorX.result(), isNonZero_dualAuthorY.result()},
             FMT(prefix, ".isNonZero_dualAuthor")),
+          resolvedPayerAuthorX(
+            pb,
+            useAppKey.packed,
+            state.accountA.account.appKeyPublicKey.x,
+            state.accountA.account.publicKey.x,
+            FMT(prefix, ".resolvedPayerAuthorX")),
+          resolvedPayerAuthorY(
+            pb,
+            useAppKey.packed,
+            state.accountA.account.appKeyPublicKey.y,
+            state.accountA.account.publicKey.y,
+            FMT(prefix, ".resolvedPayerAuthorY")),
           resolvedDualAuthorX(
             pb,
             isNonZero_dualAuthor.result(),
             dualAuthorX,
-            state.accountA.account.publicKey.x,
+            resolvedPayerAuthorX.result(),
             FMT(prefix, ".resolvedDualAuthorX")),
           resolvedDualAuthorY(
             pb,
             isNonZero_dualAuthor.result(),
             dualAuthorY,
-            state.accountA.account.publicKey.y,
+            resolvedPayerAuthorY.result(),
             FMT(prefix, ".resolvedDualAuthorY")),
+          ifUseAppKey_then_require_enable_switch(
+            pb,
+            useAppKey.packed,
+            disableAppKeyTransferToOther.packed,
+            state.constants._0,
+            FMT(prefix, ".ifUseAppKey_then_require_enable_switch")),
 
           // Signature
           hashPayer(
@@ -216,7 +252,9 @@ class TransferCircuit : public BaseTransactionCircuit
                dualAuthorX,
                dualAuthorY,
                validUntil.packed,
-               storageID.packed}),
+               storageID.packed,
+               useAppKey.packed
+               }),
             FMT(this->annotation_prefix, ".hashPayer")),
           hashDual(
             pb,
@@ -232,7 +270,9 @@ class TransferCircuit : public BaseTransactionCircuit
                dualAuthorX,
                dualAuthorY,
                validUntil.packed,
-               storageID.packed}),
+               storageID.packed,
+               useAppKey.packed
+               }),
             FMT(this->annotation_prefix, ".hashDual")),
 
           // Balances
@@ -247,6 +287,8 @@ class TransferCircuit : public BaseTransactionCircuit
           // Type
           isConditional(pb, type.packed, ".isConditional"),
           needsSignature(pb, isConditional.result(), ".needsSignature"),
+          // require type == 0
+          requireEddsaType(pb, type.packed, state.constants._0, FMT(prefix, ".requireEddsaType")),
 
           // DA optimization
           da_NeedsToAddress(
@@ -269,7 +311,12 @@ class TransferCircuit : public BaseTransactionCircuit
             from.bits,
             VariableArrayT(NUM_BITS_ADDRESS, state.constants._0),
             FMT(prefix, ".da_From")),
-
+          storageReader(pb,
+            state.constants,
+            state.accountA.storage,
+            storageID,
+            isTransferTx.result(),
+            FMT(prefix, ".storageReader")),
           // Fee as float
           fFee(pb, state.constants, Float16Encoding, FMT(prefix, ".fFee")),
           requireAccuracyFee(
@@ -280,12 +327,12 @@ class TransferCircuit : public BaseTransactionCircuit
             NUM_BITS_AMOUNT,
             FMT(prefix, ".requireAccuracyFee")),
           // Amount as float
-          fAmount(pb, state.constants, Float24Encoding, FMT(prefix, ".fAmount")),
+          fAmount(pb, state.constants, Float32Encoding, FMT(prefix, ".fAmount")),
           requireAccuracyAmount(
             pb,
             fAmount.value(),
             amount.packed,
-            Float24Accuracy,
+            Float32Accuracy,
             NUM_BITS_AMOUNT,
             FMT(prefix, ".requireAccuracyAmount")),
           // Fee payment from From to the operator
@@ -302,12 +349,15 @@ class TransferCircuit : public BaseTransactionCircuit
             isConditional.result(),
             FMT(prefix, ".numConditionalTransactionsAfter"))
     {
+        LOG("Debug", "in TransferCircuit", "");
         // Update the From account
         setArrayOutput(TXV_ACCOUNT_A_ADDRESS, fromAccountID.bits);
 
         // Set the 2 tokens used
         setArrayOutput(TXV_BALANCE_A_S_ADDRESS, tokenID.bits);
-        setArrayOutput(TXV_BALANCE_B_S_ADDRESS, feeTokenID.bits);
+        setArrayOutput(TXV_BALANCE_A_B_ADDRESS, feeTokenID.bits);
+
+        setArrayOutput(TXV_BALANCE_O_A_Address, feeTokenID.bits);
 
         // Update the From balances (transfer + fee payment)
         setOutput(TXV_BALANCE_A_S_BALANCE, balanceS_A.balance());
@@ -318,14 +368,17 @@ class TransferCircuit : public BaseTransactionCircuit
         setOutput(TXV_ACCOUNT_B_OWNER, to.packed);
 
         // Update the To balance (transfer)
+        setArrayOutput(TXV_BALANCE_B_B_ADDRESS, tokenID.bits);
         setOutput(TXV_BALANCE_B_B_BALANCE, balanceB_B.balance());
 
         // Update the operator balance for the fee payment
         setOutput(TXV_BALANCE_O_A_BALANCE, balanceA_O.balance());
 
-        // Verify 2 signatures (one of the payer, one of the dual author)
+        // Verify the 2 signatures (one of the payer, one of the dual author)
         setOutput(TXV_HASH_A, hashPayer.result());
         setOutput(TXV_HASH_B, hashDual.result());
+        setOutput(TXV_PUBKEY_X_A, resolvedPayerAuthorX.result());
+        setOutput(TXV_PUBKEY_Y_A, resolvedPayerAuthorY.result());
         setOutput(TXV_PUBKEY_X_B, resolvedDualAuthorX.result());
         setOutput(TXV_PUBKEY_Y_B, resolvedDualAuthorY.result());
         setOutput(TXV_SIGNATURE_REQUIRED_A, needsSignature.result());
@@ -336,12 +389,21 @@ class TransferCircuit : public BaseTransactionCircuit
 
         // Nonce
         setArrayOutput(TXV_STORAGE_A_ADDRESS, subArray(storageID.bits, 0, NUM_BITS_STORAGE_ADDRESS));
+
+        setOutput(TXV_STORAGE_A_TOKENSID, tokenID.packed);
+        setOutput(TXV_STORAGE_A_TOKENBID, storageReader.getTokenBID());
         setOutput(TXV_STORAGE_A_DATA, nonce.getData());
         setOutput(TXV_STORAGE_A_STORAGEID, storageID.packed);
+        setOutput(TXV_STORAGE_A_GASFEE, storageReader.getGasFee());
+        setOutput(TXV_STORAGE_A_CANCELLED, storageReader.getCancelled());
+        setOutput(TXV_STORAGE_A_FORWARD, storageReader.getForward());
     }
 
     void generate_r1cs_witness(const Transfer &transfer)
     {
+        LOG(LogDebug, "in TransferCircuit", "generate_r1cs_witness");
+        typeTx.generate_r1cs_witness(pb, ethsnarks::FieldT(int(Loopring::TransactionType::Transfer)));
+        typeTxPad.generate_r1cs_witness(pb, ethsnarks::FieldT(0));
         // Inputs
         fromAccountID.generate_r1cs_witness(pb, transfer.fromAccountID);
         toAccountID.generate_r1cs_witness(pb, transfer.toAccountID);
@@ -361,6 +423,8 @@ class TransferCircuit : public BaseTransactionCircuit
         payee_toAccountID.generate_r1cs_witness(pb, transfer.payeeToAccountID);
         maxFee.generate_r1cs_witness(pb, transfer.maxFee);
         putAddressesInDA.generate_r1cs_witness(pb, transfer.putAddressesInDA);
+        useAppKey.generate_r1cs_witness(pb, transfer.useAppKey);
+        disableAppKeyTransferToOther.generate_r1cs_witness();
 
         // Check if the inputs are valid
         isTransferTx.generate_r1cs_witness();
@@ -377,8 +441,13 @@ class TransferCircuit : public BaseTransactionCircuit
         isNonZero_dualAuthorX.generate_r1cs_witness();
         isNonZero_dualAuthorY.generate_r1cs_witness();
         isNonZero_dualAuthor.generate_r1cs_witness();
+        resolvedPayerAuthorX.generate_r1cs_witness();
+        resolvedPayerAuthorY.generate_r1cs_witness();
         resolvedDualAuthorX.generate_r1cs_witness();
         resolvedDualAuthorY.generate_r1cs_witness();
+
+
+        ifUseAppKey_then_require_enable_switch.generate_r1cs_witness();
 
         // Signatures
         hashPayer.generate_r1cs_witness();
@@ -396,6 +465,7 @@ class TransferCircuit : public BaseTransactionCircuit
         // Type
         isConditional.generate_r1cs_witness();
         needsSignature.generate_r1cs_witness();
+        requireEddsaType.generate_r1cs_witness();
 
         // DA optimization
         da_NeedsToAddress.generate_r1cs_witness();
@@ -403,11 +473,12 @@ class TransferCircuit : public BaseTransactionCircuit
         da_NeedsFromAddress.generate_r1cs_witness();
         da_From.generate_r1cs_witness();
 
+        storageReader.generate_r1cs_witness();
         // Fee as float
         fFee.generate_r1cs_witness(toFloat(transfer.fee, Float16Encoding));
         requireAccuracyFee.generate_r1cs_witness();
         // Amount as float
-        fAmount.generate_r1cs_witness(toFloat(transfer.amount, Float24Encoding));
+        fAmount.generate_r1cs_witness(toFloat(transfer.amount, Float32Encoding));
         requireAccuracyAmount.generate_r1cs_witness();
         // Fee payment from From to the operator
         feePayment.generate_r1cs_witness();
@@ -422,6 +493,9 @@ class TransferCircuit : public BaseTransactionCircuit
 
     void generate_r1cs_constraints()
     {
+        LOG(LogDebug, "in TransferCircuit", "generate_r1cs_constraints");
+        typeTx.generate_r1cs_constraints(true);
+        typeTxPad.generate_r1cs_constraints(true);
         // Inputs
         fromAccountID.generate_r1cs_constraints(true);
         toAccountID.generate_r1cs_constraints(true);
@@ -439,6 +513,8 @@ class TransferCircuit : public BaseTransactionCircuit
         payee_toAccountID.generate_r1cs_constraints(true);
         maxFee.generate_r1cs_constraints(true);
         putAddressesInDA.generate_r1cs_constraints(true);
+        useAppKey.generate_r1cs_constraints(true);
+        disableAppKeyTransferToOther.generate_r1cs_constraints();
 
         // Check if the inputs are valid
         isTransferTx.generate_r1cs_constraints();
@@ -455,8 +531,12 @@ class TransferCircuit : public BaseTransactionCircuit
         isNonZero_dualAuthorX.generate_r1cs_constraints();
         isNonZero_dualAuthorY.generate_r1cs_constraints();
         isNonZero_dualAuthor.generate_r1cs_constraints();
+        resolvedPayerAuthorX.generate_r1cs_constraints();
+        resolvedPayerAuthorY.generate_r1cs_constraints();
         resolvedDualAuthorX.generate_r1cs_constraints();
         resolvedDualAuthorY.generate_r1cs_constraints();
+
+        ifUseAppKey_then_require_enable_switch.generate_r1cs_constraints();
 
         // Signatures
         hashPayer.generate_r1cs_constraints();
@@ -474,6 +554,7 @@ class TransferCircuit : public BaseTransactionCircuit
         // Type
         isConditional.generate_r1cs_constraints();
         needsSignature.generate_r1cs_constraints();
+        requireEddsaType.generate_r1cs_constraints();
 
         // DA optimization
         da_NeedsToAddress.generate_r1cs_constraints();
@@ -481,6 +562,7 @@ class TransferCircuit : public BaseTransactionCircuit
         da_NeedsFromAddress.generate_r1cs_constraints();
         da_From.generate_r1cs_constraints();
 
+        storageReader.generate_r1cs_constraints();
         // Fee as float
         fFee.generate_r1cs_constraints();
         requireAccuracyFee.generate_r1cs_constraints();
@@ -500,17 +582,20 @@ class TransferCircuit : public BaseTransactionCircuit
 
     const VariableArrayT getPublicData() const
     {
-        return flattenReverse(
-          {type.bits,
-           fromAccountID.bits,
-           toAccountID.bits,
-           tokenID.bits,
-           fAmount.bits(),
-           feeTokenID.bits,
-           fFee.bits(),
-           storageID.bits,
-           da_To.result(),
-           da_From.result()});
+        return flattenReverse({
+            typeTx.bits,
+            typeTxPad.bits,
+            type.bits,
+            fromAccountID.bits,
+            toAccountID.bits,
+            tokenID.bits,
+            fAmount.bits(),
+            feeTokenID.bits,
+            fFee.bits(),
+            storageID.bits,
+            da_To.result(),
+            da_From.result()
+          });
     }
 };
 

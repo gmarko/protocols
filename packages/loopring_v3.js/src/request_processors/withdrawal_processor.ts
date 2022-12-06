@@ -31,9 +31,6 @@ export class WithdrawalProcessor {
     const withdrawal = this.extractData(txData);
 
     const account = state.getAccount(withdrawal.fromAccountID);
-    if (withdrawal.type === 2) {
-      account.getBalance(withdrawal.tokenID).weightAMM = new BN(0);
-    }
     account.getBalance(withdrawal.tokenID).balance.isub(withdrawal.amount);
     account.getBalance(withdrawal.feeTokenID).balance.isub(withdrawal.fee);
 
@@ -43,7 +40,6 @@ export class WithdrawalProcessor {
     if (withdrawal.type === 0 || withdrawal.type === 1) {
       // Nonce
       const storage = account
-        .getBalance(withdrawal.tokenID)
         .getStorage(withdrawal.storageID);
       storage.storageID = withdrawal.storageID;
       storage.data = new BN(1);
@@ -54,7 +50,7 @@ export class WithdrawalProcessor {
 
   public static extractData(data: Bitstream) {
     const withdrawal: Withdrawal = {};
-    let offset = 1;
+    let offset = 0;
 
     withdrawal.type = data.extractUint8(offset);
     offset += 1;
@@ -62,12 +58,12 @@ export class WithdrawalProcessor {
     offset += 20;
     withdrawal.fromAccountID = data.extractUint32(offset);
     offset += 4;
-    withdrawal.tokenID = data.extractUint16(offset);
-    offset += 2;
-    withdrawal.amount = data.extractUint96(offset);
-    offset += 12;
-    withdrawal.feeTokenID = data.extractUint16(offset);
-    offset += 2;
+
+    withdrawal.tokenID = data.extractUint32(offset);
+    offset += 4;
+
+    withdrawal.feeTokenID = data.extractUint32(offset);
+    offset += 4;
     withdrawal.fee = fromFloat(
       data.extractUint16(offset),
       Constants.Float16Encoding

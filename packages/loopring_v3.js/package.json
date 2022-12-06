@@ -1,7 +1,7 @@
 {
-  "name": "loopring_v3.js",
-  "version": "0.5.3",
-  "description": "loopring_v3.js",
+  "name": "degate.js",
+  "version": "0.1.0",
+  "description": "degate.js",
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "files": [
@@ -20,8 +20,8 @@
     "@types/lodash": "^4.14.136",
     "@types/node": "14.14.12",
     "@types/request-promise-native": "^1.0.15",
-    "@typescript-eslint/eslint-plugin": "^4.6.0",
-    "@typescript-eslint/parser": "^2.3.2",
+    "@typescript-eslint/eslint-plugin": "^4.33.0",
+    "@typescript-eslint/parser": "^4.33.0",
     "ajv": "^6.10.0",
     "chai": "^4.2.0",
     "copyfiles": "^2.1.0",

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 pragma solidity ^0.7.0;
 
 
@@ -85,7 +86,7 @@ abstract contract IProtocolFeeVault
     /// @return remainingDAOFund The remaining amount of LRC as developer pool.
     /// @return remainingReward The remaining amount of LRC as staking reward.
     function getProtocolFeeStats()
-        public
+        external
         virtual
         view
         returns (

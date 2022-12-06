@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 pragma solidity ^0.7.0;
 pragma experimental ABIEncoderV2;
 
@@ -13,18 +14,25 @@ library BlockReader {
     using BlockReader       for ExchangeData.Block;
     using BytesUtil         for bytes;
 
-    uint public constant OFFSET_TO_TRANSACTIONS = 20 + 32 + 32 + 4 + 1 + 1 + 4 + 4;
+    uint public constant OFFSET_TO_TRANSACTIONS = 20 + 32 + 32 + 32 + 32 + 4 + 1 + 4 + 4 + 2 + 2 + 2;
+
 
     struct BlockHeader
     {
         address exchange;
         bytes32 merkleRootBefore;
         bytes32 merkleRootAfter;
+        bytes32 merkleAssetRootBefore;
+        bytes32 merkleAssetRootAfter;
         uint32  timestamp;
-        uint8   protocolTakerFeeBips;
-        uint8   protocolMakerFeeBips;
+        uint8   protocolFeeBips;
+
         uint32  numConditionalTransactions;
         uint32  operatorAccountID;
+
+        uint16  depositSize;
+        uint16  accountUpdateSize;
+        uint16  withdrawSize;
     }
 
     function readHeader(
@@ -41,16 +49,31 @@ library BlockReader {
         offset += 32;
         header.merkleRootAfter = _blockData.toBytes32(offset);
         offset += 32;
+        
+        header.merkleAssetRootBefore = _blockData.toBytes32(offset);
+        offset += 32;
+        header.merkleAssetRootAfter = _blockData.toBytes32(offset);
+        offset += 32;
+
         header.timestamp = _blockData.toUint32(offset);
         offset += 4;
-        header.protocolTakerFeeBips = _blockData.toUint8(offset);
+
+        header.protocolFeeBips = _blockData.toUint8(offset);
         offset += 1;
-        header.protocolMakerFeeBips = _blockData.toUint8(offset);
-        offset += 1;
+
         header.numConditionalTransactions = _blockData.toUint32(offset);
         offset += 4;
         header.operatorAccountID = _blockData.toUint32(offset);
         offset += 4;
+
+        header.depositSize = _blockData.toUint16(offset);
+        offset += 2;
+        header.accountUpdateSize = _blockData.toUint16(offset);
+        offset += 2;
+        header.withdrawSize = _blockData.toUint16(offset);
+        offset += 2;
+
+
         assert(offset == OFFSET_TO_TRANSACTIONS);
     }
 
@@ -71,15 +94,21 @@ library BlockReader {
         uint txDataOffset = OFFSET_TO_TRANSACTIONS +
             txIdx * ExchangeData.TX_DATA_AVAILABILITY_SIZE_PART_1;
         assembly {
+            //  first 32 bytes of an Array stores the length of that array.
+
+            // part_1 is 80 bytes, longer than 32 bytes,  80 = 32 + 32 + 16
             mstore(add(txData, 32), mload(add(data, add(txDataOffset, 32))))
+            mstore(add(txData, 64), mload(add(data, add(txDataOffset, 64))))
+            mstore(add(txData, 80), mload(add(data, add(txDataOffset, 80))))
         }
         // Part 2
         txDataOffset = OFFSET_TO_TRANSACTIONS +
             blockSize * ExchangeData.TX_DATA_AVAILABILITY_SIZE_PART_1 +
             txIdx * ExchangeData.TX_DATA_AVAILABILITY_SIZE_PART_2;
         assembly {
-            mstore(add(txData, 61 /*32 + 29*/), mload(add(data, add(txDataOffset, 32))))
-            mstore(add(txData, 68            ), mload(add(data, add(txDataOffset, 39))))
+            // part_2 is 3 bytes
+            // 112 = 32 + 80(part_1)
+            mstore(add(txData, 112 ), mload(add(data, add(txDataOffset, 32))))
         }
     }
 }

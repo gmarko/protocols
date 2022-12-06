@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 pragma solidity ^0.7.0;
 pragma experimental ABIEncoderV2;
 
@@ -19,14 +20,14 @@ library AccountUpdateTransaction
     using ExchangeSignatures   for ExchangeData.State;
 
     bytes32 constant public ACCOUNTUPDATE_TYPEHASH = keccak256(
-        "AccountUpdate(address owner,uint32 accountID,uint16 feeTokenID,uint96 maxFee,uint256 publicKey,uint32 validUntil,uint32 nonce)"
+        "AccountUpdate(address owner,uint32 accountID,uint32 feeTokenID,uint96 maxFee,uint256 publicKey,uint32 validUntil,uint32 nonce)"
     );
 
     struct AccountUpdate
     {
         address owner;
         uint32  accountID;
-        uint16  feeTokenID;
+        uint32  feeTokenID;
         uint96  maxFee;
         uint96  fee;
         uint    publicKey;
@@ -58,7 +59,7 @@ library AccountUpdateTransaction
 
         // Fill in withdrawal data missing from DA
         accountUpdate.validUntil = auxData.validUntil;
-        accountUpdate.maxFee = auxData.maxFee == 0 ? accountUpdate.fee : auxData.maxFee;
+        accountUpdate.maxFee = auxData.maxFee;
         // Validate
         require(ctx.timestamp < accountUpdate.validUntil, "ACCOUNT_UPDATE_EXPIRED");
         require(accountUpdate.fee <= accountUpdate.maxFee, "ACCOUNT_UPDATE_FEE_TOO_HIGH");
@@ -68,6 +69,7 @@ library AccountUpdateTransaction
 
         // Check onchain authorization
         S.requireAuthorizedTx(accountUpdate.owner, auxData.signature, txHash);
+
     }
 
     function readTx(
@@ -75,13 +77,10 @@ library AccountUpdateTransaction
         uint         offset,
         AccountUpdate memory accountUpdate
         )
-        internal
+        private
         pure
     {
         uint _offset = offset;
-
-        require(data.toUint8Unsafe(_offset) == uint8(ExchangeData.TransactionType.ACCOUNT_UPDATE), "INVALID_TX_TYPE");
-        _offset += 1;
 
         // Check that this is a conditional offset
         require(data.toUint8Unsafe(_offset) == 1, "INVALID_AUXILIARYDATA_DATA");
@@ -94,8 +93,8 @@ library AccountUpdateTransaction
         _offset += 20;
         accountUpdate.accountID = data.toUint32Unsafe(_offset);
         _offset += 4;
-        accountUpdate.feeTokenID = data.toUint16Unsafe(_offset);
-        _offset += 2;
+        accountUpdate.feeTokenID = data.toUint32Unsafe(_offset);
+        _offset += 4;
         accountUpdate.fee = data.toUint16Unsafe(_offset).decodeFloat16();
         _offset += 2;
         accountUpdate.publicKey = data.toUintUnsafe(_offset);
@@ -108,7 +107,7 @@ library AccountUpdateTransaction
         bytes32 DOMAIN_SEPARATOR,
         AccountUpdate memory accountUpdate
         )
-        internal
+        private
         pure
         returns (bytes32)
     {

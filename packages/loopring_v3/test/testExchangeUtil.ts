@@ -10,6 +10,7 @@ import { Artifacts } from "../util/Artifacts";
 import { SignatureType, sign, verifySignature } from "../util/Signature";
 import {
   Bitstream,
+  BitstreamEx,
   BlockType,
   calculateCalldataCost,
   compressZeros,
@@ -19,9 +20,11 @@ import {
   Explorer,
   roundToFloatValue,
   toFloat,
+  fromFloat,
   TransactionType,
   Poseidon,
-  WithdrawFromMerkleTreeData
+  WithdrawFromMerkleTreeData,
+  KeyPair
 } from "loopringV3.js";
 import { Context } from "./context";
 import { doDebugLogging, logDebug, logInfo } from "./logs";
@@ -30,19 +33,21 @@ import { Simulator } from "./simulator";
 import { ExchangeTestContext } from "./testExchangeContext";
 import {
   Account,
-  AmmUpdate,
   AuthMethod,
   Block,
   BlockCallback,
   Deposit,
   Transfer,
   Noop,
+  AutoMarketStartOrderInfo,
   OrderInfo,
   TxBlock,
   AccountUpdate,
   SpotTrade,
   WithdrawalRequest,
-  SignatureVerification
+  OrderCancel,
+  AppKeyUpdate,
+  BatchSpotTrade
 } from "./types";
 
 const LoopringIOExchangeOwner = artifacts.require("LoopringIOExchangeOwner");
@@ -54,8 +59,9 @@ type TxType =
   | WithdrawalRequest
   | Deposit
   | AccountUpdate
-  | AmmUpdate
-  | SignatureVerification;
+  | OrderCancel
+  | AppKeyUpdate
+  | BatchSpotTrade;
 
 // JSON replacer function for BN values
 function replacer(name: any, val: any) {
@@ -66,10 +72,17 @@ function replacer(name: any, val: any) {
     name === "amount" ||
     name === "fee" ||
     name === "maxFee" ||
+    name === "lowPrice" ||
+    name === "highPrice" ||
+    name === "gridOffset" ||
+    name === "orderOffset" ||
     name === "originalMaxFee" ||
     name === "tokenWeight" ||
     name === "mintMinAmount" ||
-    name === "burnAmount"
+    name === "burnAmount" ||
+    name === "deltaFilledS" ||
+    name === "deltaFilledB" ||
+    name === "tradingFee"
   ) {
     return new BN(val, 16).toString(10);
   } else if (
@@ -126,7 +139,6 @@ export interface WithdrawOptions {
   to?: string;
   minGas?: number;
   gas?: number;
-  extraData?: string;
   signer?: string;
   validUntil?: number;
   storageID?: number;
@@ -139,15 +151,7 @@ export interface AccountUpdateOptions {
   authMethod?: AuthMethod;
   validUntil?: number;
   maxFee?: BN;
-}
-
-export interface AmmUpdateOptions {
-  authMethod?: AuthMethod;
-  validUntil?: number;
-}
-
-export interface SignatureVerificationOptions {
-  dataToSign?: string;
+  appointedAccountID?: number;
 }
 
 export interface OnchainBlock {
@@ -167,10 +171,7 @@ export interface AuxiliaryData {
 }
 
 export namespace AccountUpdateUtils {
-  export function toTypedData(
-    update: AccountUpdate,
-    verifyingContract: string
-  ) {
+  export function toTypedData(update: AccountUpdate, verifyingContract: string) {
     const typedData = {
       types: {
         EIP712Domain: [
@@ -182,7 +183,7 @@ export namespace AccountUpdateUtils {
         AccountUpdate: [
           { name: "owner", type: "address" },
           { name: "accountID", type: "uint32" },
-          { name: "feeTokenID", type: "uint16" },
+          { name: "feeTokenID", type: "uint32" },
           { name: "maxFee", type: "uint96" },
           { name: "publicKey", type: "uint256" },
           { name: "validUntil", type: "uint32" },
@@ -191,8 +192,8 @@ export namespace AccountUpdateUtils {
       },
       primaryType: "AccountUpdate",
       domain: {
-        name: "Loopring Protocol",
-        version: "3.6.0",
+        name: "DeGate Protocol",
+        version: "0.1.0",
         chainId: new BN(/*await web3.eth.net.getId()*/ 1),
         verifyingContract
       },
@@ -217,9 +218,13 @@ export namespace AccountUpdateUtils {
   export function sign(keyPair: any, update: AccountUpdate) {
     // Calculate hash
     const hasher = Poseidon.createHash(9, 6, 53);
+    var accountID = update.accountID;
+    if (update.nonce == 0) {
+      accountID = 0;
+    }
     const inputs = [
       update.exchange,
-      update.accountID,
+      accountID,
       update.feeTokenID,
       update.maxFee,
       update.publicKeyX,
@@ -233,10 +238,7 @@ export namespace AccountUpdateUtils {
     const signature = EdDSA.sign(keyPair.secretKey, hash);
 
     // Verify signature
-    const success = EdDSA.verify(hash, signature, [
-      keyPair.publicKeyX,
-      keyPair.publicKeyY
-    ]);
+    const success = EdDSA.verify(hash, signature, [keyPair.publicKeyX, keyPair.publicKeyY]);
     assert(success, "Failed to verify signature");
 
     return signature;
@@ -244,10 +246,7 @@ export namespace AccountUpdateUtils {
 }
 
 export namespace WithdrawalUtils {
-  export function toTypedData(
-    withdrawal: WithdrawalRequest,
-    verifyingContract: string
-  ) {
+  export function toTypedData(withdrawal: WithdrawalRequest, verifyingContract: string) {
     const typedData = {
       types: {
         EIP712Domain: [
@@ -259,21 +258,20 @@ export namespace WithdrawalUtils {
         Withdrawal: [
           { name: "owner", type: "address" },
           { name: "accountID", type: "uint32" },
-          { name: "tokenID", type: "uint16" },
-          { name: "amount", type: "uint96" },
-          { name: "feeTokenID", type: "uint16" },
+          { name: "tokenID", type: "uint32" },
+          { name: "amount", type: "uint248" },
+          { name: "feeTokenID", type: "uint32" },
           { name: "maxFee", type: "uint96" },
           { name: "to", type: "address" },
-          { name: "extraData", type: "bytes" },
-          { name: "minGas", type: "uint256" },
+          { name: "minGas", type: "uint248" },
           { name: "validUntil", type: "uint32" },
           { name: "storageID", type: "uint32" }
         ]
       },
       primaryType: "Withdrawal",
       domain: {
-        name: "Loopring Protocol",
-        version: "3.6.0",
+        name: "DeGate Protocol",
+        version: "0.1.0",
         chainId: new BN(/*await web3.eth.net.getId()*/ 1),
         verifyingContract
       },
@@ -285,7 +283,6 @@ export namespace WithdrawalUtils {
         feeTokenID: withdrawal.feeTokenID,
         maxFee: withdrawal.maxFee,
         to: withdrawal.to,
-        extraData: withdrawal.extraData,
         minGas: withdrawal.minGas,
         validUntil: withdrawal.validUntil,
         storageID: withdrawal.storageID
@@ -294,17 +291,14 @@ export namespace WithdrawalUtils {
     return typedData;
   }
 
-  export function getHash(
-    withdrawal: WithdrawalRequest,
-    verifyingContract: string
-  ) {
+  export function getHash(withdrawal: WithdrawalRequest, verifyingContract: string) {
     const typedData = this.toTypedData(withdrawal, verifyingContract);
     return sigUtil.TypedDataUtils.sign(typedData);
   }
 
   export function sign(keyPair: any, withdrawal: WithdrawalRequest) {
     // Calculate hash
-    const hasher = Poseidon.createHash(10, 6, 53);
+    const hasher = Poseidon.createHash(11, 6, 53);
     const inputs = [
       withdrawal.exchange,
       withdrawal.accountID,
@@ -314,7 +308,8 @@ export namespace WithdrawalUtils {
       withdrawal.maxFee,
       withdrawal.onchainDataHash,
       withdrawal.validUntil,
-      withdrawal.storageID
+      withdrawal.storageID,
+      withdrawal.useAppKey
     ];
     const hash = hasher(inputs).toString(10);
 
@@ -322,10 +317,7 @@ export namespace WithdrawalUtils {
     withdrawal.signature = EdDSA.sign(keyPair.secretKey, hash);
 
     // Verify signature
-    const success = EdDSA.verify(hash, withdrawal.signature, [
-      keyPair.publicKeyX,
-      keyPair.publicKeyY
-    ]);
+    const success = EdDSA.verify(hash, withdrawal.signature, [keyPair.publicKeyX, keyPair.publicKeyY]);
     assert(success, "Failed to verify signature");
   }
 }
@@ -343,9 +335,9 @@ export namespace TransferUtils {
         Transfer: [
           { name: "from", type: "address" },
           { name: "to", type: "address" },
-          { name: "tokenID", type: "uint16" },
+          { name: "tokenID", type: "uint32" },
           { name: "amount", type: "uint96" },
-          { name: "feeTokenID", type: "uint16" },
+          { name: "feeTokenID", type: "uint32" },
           { name: "maxFee", type: "uint96" },
           { name: "validUntil", type: "uint32" },
           { name: "storageID", type: "uint32" }
@@ -353,8 +345,8 @@ export namespace TransferUtils {
       },
       primaryType: "Transfer",
       domain: {
-        name: "Loopring Protocol",
-        version: "3.6.0",
+        name: "DeGate Protocol",
+        version: "0.1.0",
         chainId: new BN(/*await web3.eth.net.getId()*/ 1),
         verifyingContract
       },
@@ -379,7 +371,7 @@ export namespace TransferUtils {
 
   export function sign(keyPair: any, transfer: Transfer, payer: boolean) {
     // Calculate hash
-    const hasher = Poseidon.createHash(13, 6, 53);
+    const hasher = Poseidon.createHash(14, 6, 53);
     const inputs = [
       transfer.exchange,
       transfer.fromAccountID,
@@ -392,80 +384,17 @@ export namespace TransferUtils {
       transfer.dualAuthorX,
       transfer.dualAuthorY,
       transfer.validUntil,
-      transfer.storageID
+      transfer.storageID,
+      transfer.useAppKey
     ];
+    console.log("useAppKeyuseAppKeyuseAppKey:" + transfer.useAppKey);
     const hash = hasher(inputs).toString(10);
 
     // Create signature
     const signature = EdDSA.sign(keyPair.secretKey, hash);
 
     // Verify signature
-    const success = EdDSA.verify(hash, signature, [
-      keyPair.publicKeyX,
-      keyPair.publicKeyY
-    ]);
-    assert(success, "Failed to verify signature");
-
-    return signature;
-  }
-}
-
-export namespace AmmUpdateUtils {
-  export function toTypedData(update: AmmUpdate, verifyingContract: string) {
-    const typedData = {
-      types: {
-        EIP712Domain: [
-          { name: "name", type: "string" },
-          { name: "version", type: "string" },
-          { name: "chainId", type: "uint256" },
-          { name: "verifyingContract", type: "address" }
-        ],
-        AmmUpdate: [
-          { name: "owner", type: "address" },
-          { name: "accountID", type: "uint32" },
-          { name: "tokenID", type: "uint16" },
-          { name: "feeBips", type: "uint8" },
-          { name: "tokenWeight", type: "uint96" },
-          { name: "validUntil", type: "uint32" },
-          { name: "nonce", type: "uint32" }
-        ]
-      },
-      primaryType: "AmmUpdate",
-      domain: {
-        name: "Loopring Protocol",
-        version: "3.6.0",
-        chainId: new BN(/*await web3.eth.net.getId()*/ 1),
-        verifyingContract
-      },
-      message: {
-        owner: update.owner,
-        accountID: update.accountID,
-        tokenID: update.tokenID,
-        feeBips: update.feeBips,
-        tokenWeight: update.tokenWeight,
-        validUntil: update.validUntil,
-        nonce: update.nonce
-      }
-    };
-    return typedData;
-  }
-
-  export function getHash(update: AmmUpdate, verifyingContract: string) {
-    const typedData = this.toTypedData(update, verifyingContract);
-    return sigUtil.TypedDataUtils.sign(typedData);
-  }
-}
-
-export namespace SignatureVerificationUtils {
-  export function sign(keyPair: any, verification: SignatureVerification) {
-    // Create signature
-    const signature = EdDSA.sign(keyPair.secretKey, verification.data);
-
-    // Verify signature
-    const success = EdDSA.verify(verification.data, signature, [
-      keyPair.publicKeyX,
-      keyPair.publicKeyY
-    ]);
+    const success = EdDSA.verify(hash, signature, [keyPair.publicKeyX, keyPair.publicKeyY]);
     assert(success, "Failed to verify signature");
 
     return signature;
@@ -497,7 +426,6 @@ export class ExchangeTestUtil {
   public operator: any;
   public activeOperator: number;
 
-  public userStakingPool: any;
   public protocolFeeVault: any;
   public protocolFeeVaultContract: any;
 
@@ -507,6 +435,7 @@ export class ExchangeTestUtil {
   public operators: number[] = [];
 
   public GENESIS_MERKLE_ROOT: BN;
+  public GENESIS_MERKLE_ASSET_ROOT: BN;
   public SNARK_SCALAR_FIELD: BN;
   public MAX_OPEN_FORCED_REQUESTS: number;
   public MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE: number;
@@ -516,6 +445,9 @@ export class ExchangeTestUtil {
   public MIN_TIME_IN_SHUTDOWN: number;
   public TX_DATA_AVAILABILITY_SIZE: number;
   public MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND: number;
+  public MAX_FORCED_WITHDRAWAL_FEE: BN;
+  public MAX_PROTOCOL_FEE_BIPS: BN;
+  public DEFAULT_PROTOCOL_FEE_BIPS: BN;
 
   public tokenAddressToIDMap = new Map<string, number>();
   public tokenIDToAddressMap = new Map<number, string>();
@@ -544,8 +476,9 @@ export class ExchangeTestUtil {
   private proverPorts = new Map<number, number>();
   private portGenerator = 1234;
 
-  private emptyMerkleRoot =
-    "0x1efe4f31c90f89eb9b139426a95e5e87f6e0c9e8dab9ddf295e3f9d651f54698";
+  private emptyMerkleRoot = "0x3e1788bf14436c39a3841ae888ffb3e6ec8405bc2773afa28b6d4dfc309cf19";
+
+  private emptyMerkleAssetRoot = "0x71c8b14d71d432750479f5fe6e08abe1ec04712835a83cdf84d0483b9382ae8";
 
   public async initialize(accounts: string[]) {
     this.context = await this.createContractContext();
@@ -554,26 +487,9 @@ export class ExchangeTestUtil {
     this.explorer = new Explorer();
     await this.explorer.initialize(web3, 0);
 
-    // Initialize LoopringV3
-    this.protocolFeeVault = this.testContext.orderOwners[
-      this.testContext.orderOwners.length - 1
-    ];
+    this.protocolFeeVault = this.testContext.orderOwners[this.testContext.orderOwners.length - 1];
 
-    await this.loopringV3.updateSettings(
-      this.protocolFeeVault,
-      this.blockVerifier.address,
-      new BN(web3.utils.toWei("0.02", "ether")),
-      { from: this.testContext.deployer }
-    );
-
-    // Register LoopringV3 to UniversalRegistry
-    // await this.universalRegistry.registerProtocol(
-    //   this.loopringV3.address,
-    //   this.exchange.address,
-    //   { from: this.testContext.deployer }
-    // );
-
-    await this.loopringV3.updateProtocolFeeSettings(50, 0, {
+    await this.loopringV3.updateSettings(this.protocolFeeVault, new BN(web3.utils.toWei("0.02", "ether")), {
       from: this.testContext.deployer
     });
 
@@ -588,7 +504,10 @@ export class ExchangeTestUtil {
         owner: Constants.zeroAddress,
         publicKeyX: "0",
         publicKeyY: "0",
+        appKeyPublicKeyX: "0",
+        appKeyPublicKeyY: "0",
         secretKey: "0",
+        appKeySecretKey: "0",
         nonce: 0
       };
       this.accounts.push([protocolFeeAccount]);
@@ -598,52 +517,38 @@ export class ExchangeTestUtil {
 
     const constants = await this.exchange.getConstants();
     this.SNARK_SCALAR_FIELD = new BN(constants.SNARK_SCALAR_FIELD);
-    this.MAX_OPEN_FORCED_REQUESTS = new BN(
-      constants.MAX_OPEN_FORCED_REQUESTS
-    ).toNumber();
+    this.MAX_OPEN_FORCED_REQUESTS = new BN(constants.MAX_OPEN_FORCED_REQUESTS).toNumber();
     this.MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE = new BN(
       constants.MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE
     ).toNumber();
-    this.TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS = new BN(
-      constants.TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS
-    ).toNumber();
+    this.TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS = new BN(constants.TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS).toNumber();
     this.MAX_NUM_TOKENS = new BN(constants.MAX_NUM_TOKENS).toNumber();
-    this.MIN_AGE_PROTOCOL_FEES_UNTIL_UPDATED = new BN(
-      constants.MIN_AGE_PROTOCOL_FEES_UNTIL_UPDATED
-    ).toNumber();
-    this.MIN_TIME_IN_SHUTDOWN = new BN(
-      constants.MIN_TIME_IN_SHUTDOWN
-    ).toNumber();
-    this.TX_DATA_AVAILABILITY_SIZE = new BN(
-      constants.TX_DATA_AVAILABILITY_SIZE
-    ).toNumber();
+    this.MIN_AGE_PROTOCOL_FEES_UNTIL_UPDATED = new BN(constants.MIN_AGE_PROTOCOL_FEES_UNTIL_UPDATED).toNumber();
+    this.MIN_TIME_IN_SHUTDOWN = new BN(constants.MIN_TIME_IN_SHUTDOWN).toNumber();
+    this.TX_DATA_AVAILABILITY_SIZE = new BN(constants.TX_DATA_AVAILABILITY_SIZE).toNumber();
     this.MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND = new BN(
       constants.MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND
     ).toNumber();
+    this.MAX_FORCED_WITHDRAWAL_FEE = new BN(constants.MAX_FORCED_WITHDRAWAL_FEE);
+    this.MAX_PROTOCOL_FEE_BIPS = new BN(constants.MAX_PROTOCOL_FEE_BIPS);
+    this.DEFAULT_PROTOCOL_FEE_BIPS = new BN(constants.DEFAULT_PROTOCOL_FEE_BIPS);
+
+    await this.loopringV3.updateProtocolFeeSettings(this.DEFAULT_PROTOCOL_FEE_BIPS, {
+      from: this.testContext.deployer
+    });
   }
 
   public async setupTestState(exchangeID: number) {
-    this.operators[exchangeID] = await this.createOperator(
-      this.exchangeOperator
-    );
+    this.operators[exchangeID] = await this.createOperator(this.exchangeOperator);
   }
 
   public async createOperator(owner: string) {
     // Make an account for the operator
-    const deposit = await this.deposit(
-      owner,
-      owner,
-      Constants.zeroAddress,
-      new BN(0)
-    );
+    const deposit = await this.deposit(owner, owner, Constants.zeroAddress, new BN(0));
     return deposit.accountID;
   }
 
-  public async getEventsFromContract(
-    contract: any,
-    eventName: string,
-    fromBlock: number
-  ) {
+  public async getEventsFromContract(contract: any, eventName: string, fromBlock: number) {
     return await contract
       .getPastEvents(eventName, {
         fromBlock,
@@ -657,29 +562,15 @@ export class ExchangeTestUtil {
   // This works differently from truffleAssert.eventEmitted in that it also is able to
   // get events emmitted in `deep contracts` (i.e. events not emmitted in the contract
   // the function got called in).
-  public async assertEventsEmitted(
-    contract: any,
-    event: string,
-    numExpected: number,
-    filter?: any
-  ) {
-    const eventArr: any = await this.getEventsFromContract(
-      contract,
-      event,
-      web3.eth.blockNumber
-    );
+  public async assertEventsEmitted(contract: any, event: string, numExpected: number, filter?: any) {
+    const eventArr: any = await this.getEventsFromContract(contract, event, web3.eth.blockNumber);
     const items = eventArr.map((eventObj: any) => {
       if (filter !== undefined) {
         assert(filter(eventObj.args), "Event values unexpected: " + eventObj);
       }
       return eventObj.args;
     });
-    assert.equal(
-      items.length,
-      numExpected,
-      "Unexpected number of '" + event + "' events",
-      event
-    );
+    assert.equal(items.length, numExpected, "Unexpected number of '" + event + "' events", event);
     return items;
   }
 
@@ -698,35 +589,25 @@ export class ExchangeTestUtil {
     amount: BN,
     feeToken: string,
     fee: BN,
-    options: TransferOptions = {}
+    options: TransferOptions = {},
+    useAppKey?: number
   ) {
-    amount = roundToFloatValue(amount, Constants.Float24Encoding);
+    amount = roundToFloatValue(amount, Constants.Float32Encoding);
     fee = roundToFloatValue(fee, Constants.Float16Encoding);
 
     // Fill in defaults
-    const amountToDeposit = options.amountToDeposit
-      ? options.amountToDeposit
-      : amount;
+    const amountToDeposit = options.amountToDeposit ? options.amountToDeposit : amount;
     const feeToDeposit = options.feeToDeposit ? options.feeToDeposit : fee;
-    const authMethod =
-      options.authMethod !== undefined ? options.authMethod : AuthMethod.EDDSA;
-    const useDualAuthoring =
-      options.useDualAuthoring !== undefined ? options.useDualAuthoring : false;
-    const secretKnown =
-      options.secretKnown !== undefined ? options.secretKnown : true;
-    const transferToNew =
-      options.transferToNew !== undefined ? options.transferToNew : false;
+    const authMethod = options.authMethod !== undefined ? options.authMethod : AuthMethod.EDDSA;
+    const useDualAuthoring = options.useDualAuthoring !== undefined ? options.useDualAuthoring : false;
+    const secretKnown = options.secretKnown !== undefined ? options.secretKnown : true;
+    const transferToNew = options.transferToNew !== undefined ? options.transferToNew : false;
     const signer = options.signer !== undefined ? options.signer : from;
-    const validUntil =
-      options.validUntil !== undefined ? options.validUntil : 0xffffffff;
-    const storageID =
-      options.storageID !== undefined
-        ? options.storageID
-        : this.storageIDGenerator++;
+    const validUntil = options.validUntil !== undefined ? options.validUntil : 0xffffffff;
+    const storageID = options.storageID !== undefined ? options.storageID : this.storageIDGenerator++;
     const maxFee = options.maxFee !== undefined ? options.maxFee : fee;
-    const putAddressesInDA =
-      options.putAddressesInDA !== undefined ? options.putAddressesInDA : false;
-
+    const putAddressesInDA = options.putAddressesInDA !== undefined ? options.putAddressesInDA : false;
+    useAppKey = useAppKey !== undefined ? useAppKey : 0;
     // From
     if (amountToDeposit.gt(new BN(0))) {
       await this.deposit(from, from, token, amountToDeposit);
@@ -748,7 +629,10 @@ export class ExchangeTestUtil {
         owner: to,
         publicKeyX: "0",
         publicKeyY: "0",
+        appKeyPublicKeyX: "0",
+        appKeyPublicKeyY: "0",
         secretKey: "0",
+        appKeySecretKey: "0",
         nonce: 0
       };
       this.accounts[this.exchangeId].push(account);
@@ -801,56 +685,21 @@ export class ExchangeTestUtil {
       payerTo: useDualAuthoring ? Constants.zeroAddress : to,
       payeeToAccountID: toAccountID,
       storageID,
-      dualSecretKey
+      dualSecretKey,
+      useAppKey
     };
-
+    const appKeyPair: KeyPair = {
+      publicKeyX: accountFrom.appKeyPublicKeyX,
+      publicKeyY: accountFrom.appKeyPublicKeyY,
+      secretKey: accountFrom.appKeySecretKey
+    };
     // Authorize the tx
     if (authMethod === AuthMethod.EDDSA) {
-      transfer.signature = TransferUtils.sign(accountFrom, transfer, true);
+      transfer.signature = TransferUtils.sign(useAppKey == 1 ? appKeyPair : accountFrom, transfer, true);
       if (useDualAuthoring) {
-        const dualKeyPair = secretKnown
-          ? dualAuthorkeyPair
-          : this.getKeyPairEDDSA();
-        transfer.dualSignature = TransferUtils.sign(
-          dualKeyPair,
-          transfer,
-          false
-        );
+        const dualKeyPair = secretKnown ? dualAuthorkeyPair : this.getKeyPairEDDSA();
+        transfer.dualSignature = TransferUtils.sign(dualKeyPair, transfer, false);
       }
-    } else if (authMethod === AuthMethod.ECDSA) {
-      const hash = TransferUtils.getHash(transfer, this.exchange.address);
-      transfer.onchainSignature = await sign(
-        signer,
-        hash,
-        SignatureType.EIP_712
-      );
-      await verifySignature(signer, hash, transfer.onchainSignature);
-    } else if (authMethod === AuthMethod.APPROVE) {
-      const txHash = TransferUtils.getHash(transfer, this.exchange.address);
-
-      // Approve
-      await this.exchange.approveTransaction(signer, txHash, {
-        from: signer
-      });
-
-      // Verify the transaction has been approved
-      // Check the event
-      const event = await this.assertEventEmitted(
-        this.exchange,
-        "TransactionApproved"
-      );
-      assert.equal(event.owner, signer, "unexpected tx owner");
-      assert.equal(
-        event.transactionHash,
-        "0x" + txHash.toString("hex"),
-        "unexpected tx hash"
-      );
-      // Check the exchange state
-      const isApproved = await this.exchange.isTransactionApproved(
-        signer,
-        txHash
-      );
-      assert(isApproved, "tx not approved");
     }
 
     if (authMethod !== AuthMethod.EDDSA) {
@@ -868,35 +717,86 @@ export class ExchangeTestUtil {
     bSetupOrderA: boolean = true,
     bSetupOrderB: boolean = true,
     bDepositA: boolean = true,
-    bDepositB: boolean = true
+    bDepositB: boolean = true,
+    storageIDA?: number,
+    storageIDB?: number
   ) {
     if (bSetupOrderA) {
-      await this.setupOrder(ring.orderA, this.storageIDGenerator++, bDepositA);
+      storageIDA = storageIDA === undefined ? this.storageIDGenerator++ : storageIDA;
+      await this.setupOrder(ring.orderA, storageIDA, bDepositA);
     }
     if (bSetupOrderB) {
-      await this.setupOrder(ring.orderB, this.storageIDGenerator++, bDepositB);
+      storageIDB = storageIDB === undefined ? this.storageIDGenerator++ : storageIDB;
+      await this.setupOrder(ring.orderB, storageIDB, bDepositB);
     }
-    ring.tokenID =
-      ring.tokenID !== undefined
-        ? ring.tokenID
-        : await this.getTokenIdFromNameOrAddress("LRC");
+    ring.tokenID = ring.tokenID !== undefined ? ring.tokenID : await this.getTokenIdFromNameOrAddress("LRC");
     ring.fee = ring.fee ? ring.fee : new BN(web3.utils.toWei("1", "ether"));
   }
 
-  public async setupOrder(
-    order: OrderInfo,
-    index: number,
-    bDeposit: boolean = true
-  ) {
+  public async setupBatchSpotTrade(batchSpotTrade: BatchSpotTrade) {
+    for (var i = 0; i < batchSpotTrade.users.length; i++) {
+      for (var j = 0; j < batchSpotTrade.users[i].orders.length; j++) {
+        await this.setupOrder(
+          batchSpotTrade.users[i].orders[j],
+          batchSpotTrade.users[i].orders[j].storageID
+            ? batchSpotTrade.users[i].orders[j].storageID
+            : this.storageIDGenerator++,
+          false
+        );
+      }
+      batchSpotTrade.users[i].accountID = batchSpotTrade.users[i].orders[0].accountID;
+    }
+
+    batchSpotTrade.tokenID =
+      batchSpotTrade.tokenID !== undefined ? batchSpotTrade.tokenID : await this.getTokenIdFromNameOrAddress("LRC");
+    batchSpotTrade.fee = batchSpotTrade.fee ? batchSpotTrade.fee : new BN(web3.utils.toWei("1", "ether"));
+
+    batchSpotTrade.enableDataCheck = batchSpotTrade.enableDataCheck !== undefined ? batchSpotTrade.enableDataCheck : false;
+    batchSpotTrade.userAFirstEstimateExchange = batchSpotTrade.userAFirstEstimateExchange !== undefined ? batchSpotTrade.userAFirstEstimateExchange : "0";
+    batchSpotTrade.userASecondEstimateExchange = batchSpotTrade.userASecondEstimateExchange !== undefined ? batchSpotTrade.userASecondEstimateExchange : "0";
+    batchSpotTrade.userAThirdEstimateExchange = batchSpotTrade.userAThirdEstimateExchange !== undefined ? batchSpotTrade.userAThirdEstimateExchange : "0";
+
+    batchSpotTrade.userBFirstEstimateExchange = batchSpotTrade.userBFirstEstimateExchange !== undefined ? batchSpotTrade.userBFirstEstimateExchange : "0";
+    batchSpotTrade.userBSecondEstimateExchange = batchSpotTrade.userBSecondEstimateExchange !== undefined ? batchSpotTrade.userBSecondEstimateExchange : "0";
+    batchSpotTrade.userBThirdEstimateExchange = batchSpotTrade.userBThirdEstimateExchange !== undefined ? batchSpotTrade.userBThirdEstimateExchange : "0";
+
+    batchSpotTrade.userCFirstEstimateExchange = batchSpotTrade.userCFirstEstimateExchange !== undefined ? batchSpotTrade.userCFirstEstimateExchange : "0";
+    batchSpotTrade.userCSecondEstimateExchange = batchSpotTrade.userCSecondEstimateExchange !== undefined ? batchSpotTrade.userCSecondEstimateExchange : "0";
+    batchSpotTrade.userCThirdEstimateExchange = batchSpotTrade.userCThirdEstimateExchange !== undefined ? batchSpotTrade.userCThirdEstimateExchange : "0";
+
+    batchSpotTrade.userDFirstEstimateExchange = batchSpotTrade.userDFirstEstimateExchange !== undefined ? batchSpotTrade.userDFirstEstimateExchange : "0";
+    batchSpotTrade.userDSecondEstimateExchange = batchSpotTrade.userDSecondEstimateExchange !== undefined ? batchSpotTrade.userDSecondEstimateExchange : "0";
+    batchSpotTrade.userDThirdEstimateExchange = batchSpotTrade.userDThirdEstimateExchange !== undefined ? batchSpotTrade.userDThirdEstimateExchange : "0";
+
+    batchSpotTrade.userEFirstEstimateExchange = batchSpotTrade.userEFirstEstimateExchange !== undefined ? batchSpotTrade.userEFirstEstimateExchange : "0";
+    batchSpotTrade.userESecondEstimateExchange = batchSpotTrade.userESecondEstimateExchange !== undefined ? batchSpotTrade.userESecondEstimateExchange : "0";
+    batchSpotTrade.userEThirdEstimateExchange = batchSpotTrade.userEThirdEstimateExchange !== undefined ? batchSpotTrade.userEThirdEstimateExchange : "0";
+
+    batchSpotTrade.userFFirstEstimateExchange = batchSpotTrade.userFFirstEstimateExchange !== undefined ? batchSpotTrade.userFFirstEstimateExchange : "0";
+    batchSpotTrade.userFSecondEstimateExchange = batchSpotTrade.userFSecondEstimateExchange !== undefined ? batchSpotTrade.userFSecondEstimateExchange : "0";
+    batchSpotTrade.userFThirdEstimateExchange = batchSpotTrade.userFThirdEstimateExchange !== undefined ? batchSpotTrade.userFThirdEstimateExchange : "0";
+
+    batchSpotTrade.operatorFirstEstimateExchange = batchSpotTrade.operatorFirstEstimateExchange !== undefined ? batchSpotTrade.operatorFirstEstimateExchange : "0";
+    batchSpotTrade.operatorSecondEstimateExchange = batchSpotTrade.operatorSecondEstimateExchange !== undefined ? batchSpotTrade.operatorSecondEstimateExchange : "0";
+    batchSpotTrade.operatorThirdEstimateExchange = batchSpotTrade.operatorThirdEstimateExchange !== undefined ? batchSpotTrade.operatorThirdEstimateExchange : "0";
+    
+  }
+
+  public async setupOrder(order: OrderInfo, index: number, bDeposit: boolean = true) {
+    if (
+      (order.type == 6 || order.type == 7) &&
+      order.startOrder !== undefined &&
+      order.isNextOrder &&
+      order.appointedStorageID !== undefined
+    ) {
+      index = order.appointedStorageID;
+    }
     if (order.owner === undefined) {
       const accountIndex = index % this.testContext.orderOwners.length;
       order.owner = this.testContext.orderOwners[accountIndex];
     } else if (order.owner !== undefined && !order.owner.startsWith("0x")) {
       const accountIndex = parseInt(order.owner, 10);
-      assert(
-        accountIndex >= 0 && accountIndex < this.testContext.orderOwners.length,
-        "Invalid owner index"
-      );
+      assert(accountIndex >= 0 && accountIndex < this.testContext.orderOwners.length, "Invalid owner index");
       order.owner = this.testContext.orderOwners[accountIndex];
     }
     if (!order.tokenS.startsWith("0x")) {
@@ -908,30 +808,36 @@ export class ExchangeTestUtil {
     if (!order.validUntil) {
       // Set the order validUntil time to a bit after the current timestamp;
       const blockNumber = await web3.eth.getBlockNumber();
-      order.validUntil =
-        (await web3.eth.getBlock(blockNumber)).timestamp + 3600;
+      order.validUntil = (await web3.eth.getBlock(blockNumber)).timestamp + 3600;
     }
 
-    order.exchange =
-      order.exchange !== undefined ? order.exchange : this.exchange.address;
+    order.exchange = order.exchange !== undefined ? order.exchange : this.exchange.address;
 
-    order.fillAmountBorS =
-      order.fillAmountBorS !== undefined ? order.fillAmountBorS : true;
+    order.fillAmountBorS = order.fillAmountBorS !== undefined ? order.fillAmountBorS : true;
 
-    order.taker =
-      order.taker !== undefined ? order.taker : Constants.zeroAddress;
+    order.taker = order.taker !== undefined ? order.taker : Constants.zeroAddress;
 
-    order.maxFeeBips = order.maxFeeBips !== undefined ? order.maxFeeBips : 20;
-
-    order.feeBips =
-      order.feeBips !== undefined ? order.feeBips : order.maxFeeBips;
-
-    order.amm = order.amm !== undefined ? order.amm : false;
+    order.feeBips = order.feeBips !== undefined ? order.feeBips : 0;
+    order.tradingFee = order.tradingFee !== undefined ? order.tradingFee : new BN(0);
 
     order.storageID = order.storageID !== undefined ? order.storageID : index;
 
     order.tokenIdS = this.tokenAddressToIDMap.get(order.tokenS);
     order.tokenIdB = this.tokenAddressToIDMap.get(order.tokenB);
+    order.fee = order.fee !== undefined ? order.fee : new BN(0);
+    order.maxFee = order.maxFee !== undefined ? order.maxFee : new BN(0);
+    order.feeTokenID =
+      order.feeTokenID !== undefined ? order.feeTokenID : this.tokenAddressToIDMap.get(Constants.zeroAddress);
+
+    order.type = order.type !== undefined ? order.type : 0;
+    order.level = order.level !== undefined ? order.level : 0;
+    order.gridOffset = order.gridOffset !== undefined ? order.gridOffset : new BN(0);
+    order.orderOffset = order.orderOffset !== undefined ? order.orderOffset : new BN(0);
+    order.maxLevel = order.maxLevel !== undefined ? order.maxLevel : 0;
+
+    order.deltaFilledB = order.deltaFilledB !== undefined ? order.deltaFilledB : new BN(0);
+    order.deltaFilledS = order.deltaFilledS !== undefined ? order.deltaFilledS : new BN(0);
+    order.useAppKey = order.useAppKey !== undefined ? order.useAppKey : 0;
 
     if (bDeposit) {
       // setup initial balances:
@@ -940,18 +846,48 @@ export class ExchangeTestUtil {
       order.accountID = this.findAccount(order.owner).accountID;
     }
 
-    // Sign the order
-    this.signOrder(order);
+    if (order.startOrder === undefined && (order.type == 6 || order.type == 7) && order.level == 0) {
+      // This order is the first auto-market order, which needs to be supplemented by automarketStartOrder
+      const startOrder: AutoMarketStartOrderInfo = {
+        exchange: order.exchange,
+        storageID: order.storageID,
+        accountID: order.accountID,
+        tokenIdS: order.tokenIdS,
+        tokenIdB: order.tokenIdB,
+        amountS: order.amountS,
+        amountB: order.amountB,
+        validUntil: order.validUntil,
+        fillAmountBorS: order.fillAmountBorS,
+        taker: order.taker,
+        feeTokenID: order.feeTokenID,
+        feeBips: order.feeBips,
+        tradingFee: order.tradingFee,
+        maxFee: order.maxFee,
+        type: order.type,
+        gridOffset: order.gridOffset,
+        orderOffset: order.orderOffset,
+        maxLevel: order.maxLevel,
+        useAppKey: order.useAppKey
+      };
+      console.log("AutoMarket-====++++++, type:" + startOrder.type);
+      order.startOrder = startOrder;
+    }
+    // Auto-market does not need to sign any orders except the first one
+    if ((order.type == 6 || order.type == 7) && order.startOrder.signature !== undefined) {
+      order.signature = order.startOrder.signature;
+    } else {
+      // Sign the order
+      this.signOrder(order);
+    }
   }
 
   public signOrder(order: OrderInfo) {
-    if (order.signature !== undefined || order.amm) {
+    if (order.signature !== undefined) {
       return;
     }
     const account = this.accounts[this.exchangeId][order.accountID];
 
-    // Calculate hash
-    const hasher = Poseidon.createHash(12, 6, 53);
+    const hasher = Poseidon.createHash(18, 6, 53);
     const inputs = [
       order.exchange,
       order.storageID,
@@ -961,20 +897,34 @@ export class ExchangeTestUtil {
       order.amountS,
       order.amountB,
       order.validUntil,
-      order.maxFeeBips,
       order.fillAmountBorS ? 1 : 0,
-      order.taker
+      order.taker,
+      order.feeTokenID,
+      order.maxFee,
+      order.type,
+      order.gridOffset,
+      order.orderOffset,
+      order.maxLevel,
+      order.useAppKey
     ];
     order.hash = hasher(inputs).toString(10);
 
+    const appKeyPair: KeyPair = {
+      publicKeyX: account.appKeyPublicKeyX,
+      publicKeyY: account.appKeyPublicKeyY,
+      secretKey: account.appKeySecretKey
+    };
+
+    const pair = order.useAppKey == 1 ? appKeyPair : account;
+
     // Create signature
-    order.signature = EdDSA.sign(account.secretKey, order.hash);
+    order.signature = EdDSA.sign(pair.secretKey, order.hash);
 
     // Verify signature
-    const success = EdDSA.verify(order.hash, order.signature, [
-      account.publicKeyX,
-      account.publicKeyY
-    ]);
+    const success = EdDSA.verify(order.hash, order.signature, [pair.publicKeyX, pair.publicKeyY]);
+    if ((order.type == 6 || order.type == 7) && order.level == 0) {
+      order.startOrder.signature = order.signature;
+    }
     assert(success, "Failed to verify signature");
   }
 
@@ -994,32 +944,18 @@ export class ExchangeTestUtil {
     block.signature = EdDSA.sign(account.secretKey, hash);
 
     // Verify signature
-    const success = EdDSA.verify(hash, block.signature, [
-      account.publicKeyX,
-      account.publicKeyY
-    ]);
+    const success = EdDSA.verify(hash, block.signature, [account.publicKeyX, account.publicKeyY]);
     assert(success, "Failed to verify signature");
   }
 
   public async setOrderBalances(order: OrderInfo) {
-    const balanceS =
-      order.balanceS !== undefined ? order.balanceS : order.amountS;
-    const deposit = await this.deposit(
-      order.owner,
-      order.owner,
-      order.tokenS,
-      balanceS
-    );
+    const balanceS = order.balanceS !== undefined ? order.balanceS : order.amountS;
+    const deposit = await this.deposit(order.owner, order.owner, order.tokenS, balanceS);
     order.accountID = deposit.accountID;
 
     const balanceB = order.balanceB !== undefined ? order.balanceB : new BN(0);
     if (balanceB.gt(new BN(0)) || order.accountID === undefined) {
-      const deposit = await this.deposit(
-        order.owner,
-        order.owner,
-        order.tokenB,
-        balanceB
-      );
+      const deposit = await this.deposit(order.owner, order.owner, order.tokenB, balanceB);
       order.accountID = deposit.accountID;
     }
   }
@@ -1028,42 +964,24 @@ export class ExchangeTestUtil {
     return this.storageIDGenerator++;
   }
 
-  public getAddressBook(
-    ring: SpotTrade,
-    index?: number,
-    addressBook: { [id: number]: string } = {}
-  ) {
-    const addAccount = (
-      addrBook: { [id: string]: any },
-      accountID: number,
-      name: string
-    ) => {
-      addrBook[accountID] =
-        (addrBook[accountID] ? addrBook[accountID] + "=" : "") + name;
+  public reserveMultiStorageID(reserve: number) {
+    this.storageIDGenerator = this.storageIDGenerator + reserve;
+  }
+
+  public getAddressBook(ring: SpotTrade, index?: number, addressBook: { [id: number]: string } = {}) {
+    const addAccount = (addrBook: { [id: string]: any }, accountID: number, name: string) => {
+      addrBook[accountID] = (addrBook[accountID] ? addrBook[accountID] + "=" : "") + name;
     };
     const bIndex = index !== undefined;
     addAccount(addressBook, 0, "ProtocolFeePool");
-    addAccount(
-      addressBook,
-      ring.orderA.accountID,
-      "OwnerA" + (bIndex ? "[" + index + "]" : "")
-    );
-    addAccount(
-      addressBook,
-      ring.orderB.accountID,
-      "OwnerB" + (bIndex ? "[" + index + "]" : "")
-    );
+    addAccount(addressBook, ring.orderA.accountID, "OwnerA" + (bIndex ? "[" + index + "]" : ""));
+    addAccount(addressBook, ring.orderB.accountID, "OwnerB" + (bIndex ? "[" + index + "]" : ""));
     return addressBook;
   }
 
   public getAddressBookBlock(block: TxBlock) {
-    const addAccount = (
-      addrBook: { [id: string]: any },
-      accountID: number,
-      name: string
-    ) => {
-      addrBook[accountID] =
-        (addrBook[accountID] ? addrBook[accountID] + "=" : "") + name;
+    const addAccount = (addrBook: { [id: string]: any }, accountID: number, name: string) => {
+      addrBook[accountID] = (addrBook[accountID] ? addrBook[accountID] + "=" : "") + name;
     };
 
     let addressBook: { [id: number]: string } = {};
@@ -1115,31 +1033,23 @@ export class ExchangeTestUtil {
     to: string,
     token: string,
     amount: BN,
-    options: DepositOptions = {}
+    options: DepositOptions = {},
+    type?: number
   ) {
     // Fill in defaults
-    const autoSetKeys =
-      options.autoSetKeys !== undefined ? options.autoSetKeys : true;
-    const contract =
-      options.accountContract !== undefined
-        ? options.accountContract
-        : this.exchange;
+    const autoSetKeys = options.autoSetKeys !== undefined ? options.autoSetKeys : true;
+    const contract = options.accountContract !== undefined ? options.accountContract : this.exchange;
     const amountDepositedCanDiffer =
-      options.amountDepositedCanDiffer !== undefined
-        ? options.amountDepositedCanDiffer
-        : this.exchange;
+      options.amountDepositedCanDiffer !== undefined ? options.amountDepositedCanDiffer : this.exchange;
 
-    //console.log("token:" + token);
-    //console.log("amount:" + amount.toString(10));
+    type = type !== undefined ? type : 0;
 
     if (!token.startsWith("0x")) {
       token = this.testContext.tokenSymbolAddrMap.get(token);
     }
     const tokenID = await this.getTokenID(token);
 
-    const caller = options.accountContract
-      ? this.testContext.orderOwners[0]
-      : from;
+    const caller = options.accountContract ? this.testContext.orderOwners[0] : from;
 
     let accountID = await this.getAccountID(to);
     let accountNewCreated = false;
@@ -1149,7 +1059,10 @@ export class ExchangeTestUtil {
         owner: to,
         publicKeyX: "0",
         publicKeyY: "0",
+        appKeyPublicKeyX: "0",
+        appKeyPublicKeyY: "0",
         secretKey: "0",
+        appKeySecretKey: "0",
         nonce: 0
       };
       this.accounts[this.exchangeId].push(account);
@@ -1169,47 +1082,114 @@ export class ExchangeTestUtil {
       }
     }
 
-    const callerEthBalanceBefore = await this.getOnchainBalance(
-      from,
-      Constants.zeroAddress
-    );
+    const callerEthBalanceBefore = await this.getOnchainBalance(from, Constants.zeroAddress);
 
-    const tx = await contract.deposit(
-      from,
-      to,
-      token,
-      web3.utils.toBN(amount),
-      web3.utils.hexToBytes("0x"),
-      { from: caller, value: ethToSend, gasPrice: 0 }
-    );
+    const tx = await contract.deposit(from, to, token, web3.utils.toBN(amount), web3.utils.hexToBytes("0x"), {
+      from: caller,
+      value: ethToSend,
+      gasPrice: 0
+    });
     const ethBlock = await web3.eth.getBlock(tx.receipt.blockNumber);
     logInfo("\x1b[46m%s\x1b[0m", "[Deposit] Gas used: " + tx.receipt.gasUsed);
 
     // Check if the correct fee amount was paid
-    const callerEthBalanceAfter = await this.getOnchainBalance(
-      from,
-      Constants.zeroAddress
-    );
+    const callerEthBalanceAfter = await this.getOnchainBalance(from, Constants.zeroAddress);
     assert(
       callerEthBalanceAfter.eq(callerEthBalanceBefore.sub(ethToSend)),
       "fee paid by the depositer needs to match exactly with the fee needed"
     );
 
-    const event = await this.assertEventEmitted(
-      this.exchange,
-      "DepositRequested"
-    );
+    const event = await this.assertEventEmitted(this.exchange, "DepositRequested");
     if (amountDepositedCanDiffer) {
       amount = event.amount;
     }
 
-    const deposit = await this.requestDeposit(
-      to,
-      token,
-      amount,
-      ethBlock.timestamp,
-      tx.receipt.transactionHash
-    );
+    const deposit = await this.requestDeposit(to, token, amount, ethBlock.timestamp, tx.receipt.transactionHash, type);
+
+    if (accountNewCreated && autoSetKeys) {
+      let keyPair = this.getKeyPairEDDSA();
+      await this.requestAccountUpdate(to, token, new BN(0), keyPair, {
+        authMethod: AuthMethod.ECDSA
+      });
+    }
+
+    return deposit;
+  }
+
+  public async depositByTransfer(
+    from: string,
+    to: string,
+    token: string,
+    amount: BN,
+    options: DepositOptions = {},
+    type?: number
+  ) {
+    // Fill in defaults
+    const autoSetKeys = options.autoSetKeys !== undefined ? options.autoSetKeys : true;
+    const contract = options.accountContract !== undefined ? options.accountContract : this.exchange;
+    const amountDepositedCanDiffer =
+      options.amountDepositedCanDiffer !== undefined ? options.amountDepositedCanDiffer : this.exchange;
+
+    type = type !== undefined ? type : 1;
+
+    if (!token.startsWith("0x")) {
+      token = this.testContext.tokenSymbolAddrMap.get(token);
+    }
+    const tokenID = await this.getTokenID(token);
+    console.log("depositByTransfer, tokenID", tokenID);
+
+    const caller = options.accountContract ? this.testContext.orderOwners[0] : from;
+
+    let accountID = await this.getAccountID(to);
+    let accountNewCreated = false;
+    if (accountID === undefined) {
+      const account: Account = {
+        accountID: this.accounts[this.exchangeId].length,
+        owner: to,
+        publicKeyX: "0",
+        publicKeyY: "0",
+        appKeyPublicKeyX: "0",
+        appKeyPublicKeyY: "0",
+        secretKey: "0",
+        appKeySecretKey: "0",
+        nonce: 0
+      };
+      this.accounts[this.exchangeId].push(account);
+      accountID = account.accountID;
+
+      accountNewCreated = true;
+    }
+
+    let ethToSend = new BN(0);
+    if (amount.gt(0)) {
+      if (token !== Constants.zeroAddress) {
+        const Token = this.testContext.tokenAddrInstanceMap.get(token);
+        await Token.setBalance(from, amount);
+        // await Token.approve(this.depositContract.address, amount, { from });
+      } else {
+        ethToSend = ethToSend.add(web3.utils.toBN(amount));
+      }
+    }
+
+    let txReceipt;
+
+    if (token !== Constants.zeroAddress) {
+      const Token = this.testContext.tokenAddrInstanceMap.get(token);
+      let tx = await Token.transfer(this.depositContract.address, amount, { from });
+      txReceipt = tx.receipt;
+    } else {
+      txReceipt = await web3.eth.sendTransaction({
+        from: from,
+        to: this.depositContract.address,
+        value: ethToSend
+      });
+    }
+    console.log("txReceipt", txReceipt);
+
+    const ethBlock = await web3.eth.getBlock(txReceipt.blockNumber);
+    logInfo("\x1b[46m%s\x1b[0m", "[Deposit by transfer] Gas used: " + txReceipt.gasUsed);
+
+    const deposit = await this.requestDeposit(to, token, amount, ethBlock.timestamp, txReceipt.transactionHash, type);
 
     if (accountNewCreated && autoSetKeys) {
       let keyPair = this.getKeyPairEDDSA();
@@ -1226,7 +1206,8 @@ export class ExchangeTestUtil {
     token: string,
     amount: BN,
     timestamp?: number,
-    transactionHash?: string
+    transactionHash?: string,
+    type?: number
   ) {
     const accountID = await this.getAccountID(owner);
     const deposit: Deposit = {
@@ -1237,7 +1218,8 @@ export class ExchangeTestUtil {
       amount,
       token,
       timestamp,
-      transactionHash
+      transactionHash,
+      type
     };
     this.pendingTransactions[this.exchangeId].push(deposit);
     return deposit;
@@ -1253,31 +1235,22 @@ export class ExchangeTestUtil {
     amount: BN,
     feeToken: string,
     fee: BN,
-    options: WithdrawOptions = {}
+    options: WithdrawOptions = {},
+    useAppKey?: number
   ) {
     // Fill in defaults
-    const authMethod =
-      options.authMethod !== undefined ? options.authMethod : AuthMethod.EDDSA;
+    const authMethod = options.authMethod !== undefined ? options.authMethod : AuthMethod.EDDSA;
     const to = options.to !== undefined ? options.to : owner;
     const minGas = options.minGas !== undefined ? options.minGas : 0;
-    const gas =
-      options.gas !== undefined ? options.gas : minGas > 0 ? minGas : 100000;
+    const gas = options.gas !== undefined ? options.gas : minGas > 0 ? minGas : 100000;
     const signer = options.signer !== undefined ? options.signer : owner;
-    const extraData =
-      options.extraData !== undefined ? options.extraData : "0x";
-    const validUntil =
-      options.validUntil !== undefined ? options.validUntil : 0xffffffff;
+    const validUntil = options.validUntil !== undefined ? options.validUntil : 0xffffffff;
     const maxFee = options.maxFee !== undefined ? options.maxFee : fee;
-    let storageID =
-      options.storageID !== undefined
-        ? options.storageID
-        : this.storageIDGenerator++;
-    let storeRecipient =
-      options.storeRecipient !== undefined ? options.storeRecipient : false;
+    let storageID = options.storageID !== undefined ? options.storageID : this.storageIDGenerator++;
+    let storeRecipient = options.storeRecipient !== undefined ? options.storeRecipient : false;
     let skipForcedAuthentication =
-      options.skipForcedAuthentication !== undefined
-        ? options.skipForcedAuthentication
-        : false;
+      options.skipForcedAuthentication !== undefined ? options.skipForcedAuthentication : false;
+    useAppKey = useAppKey !== undefined ? useAppKey : 0;
 
     let type = 1;
     if (authMethod === AuthMethod.EDDSA) {
@@ -1288,7 +1261,9 @@ export class ExchangeTestUtil {
         type = 2;
       } else {
         type = 3;
+        amount = new BN(0);
       }
+      storageID = 0
     }
 
     if (!token.startsWith("0x")) {
@@ -1303,21 +1278,13 @@ export class ExchangeTestUtil {
     if (authMethod === AuthMethod.FORCE && !skipForcedAuthentication) {
       const withdrawalFee = await this.loopringV3.forcedWithdrawalFee();
       if (owner != Constants.zeroAddress) {
-        const numAvailableSlotsBefore = (
-          await this.exchange.getNumAvailableForcedSlots()
-        ).toNumber();
+        const numAvailableSlotsBefore = (await this.exchange.getNumAvailableForcedSlots()).toNumber();
         await this.exchange.forceWithdraw(signer, token, accountID, {
           from: signer,
           value: withdrawalFee
         });
-        const numAvailableSlotsAfter = (
-          await this.exchange.getNumAvailableForcedSlots()
-        ).toNumber();
-        assert.equal(
-          numAvailableSlotsAfter,
-          numAvailableSlotsBefore - 1,
-          "available slots should have decreased by 1"
-        );
+        const numAvailableSlotsAfter = (await this.exchange.getNumAvailableForcedSlots()).toNumber();
+        assert.equal(numAvailableSlotsAfter, numAvailableSlotsBefore - 1, "available slots should have decreased by 1");
       } else {
         accountID = 0;
         await this.exchange.withdrawProtocolFees(token, {
@@ -1330,17 +1297,26 @@ export class ExchangeTestUtil {
 
     // Calculate the data hash
     const onchainData = new Bitstream();
-    onchainData.addNumber(minGas, 32);
+    onchainData.addNumber(minGas, 31);
     onchainData.addAddress(to);
-    onchainData.addHex(extraData);
+    onchainData.addBN(amount, 31);
+    console.log("minGas:" + minGas);
+    console.log("to:" + to);
+    console.log("amount:" + amount);
     const onchainDataHash =
       "0x" +
-      ethUtil
-        .keccak(Buffer.from(onchainData.getData().slice(2), "hex"))
+      SHA256(Buffer.from(onchainData.getData().slice(2), "hex"))
         .toString("hex")
         .slice(0, 40);
 
-    const account = this.accounts[this.exchangeId][accountID];
+    console.log("onchainDataHash:" + onchainDataHash);
+    
+    var account;
+    if ( accountID == 0) {
+      account = this.findAccount(owner);
+    } else {
+      account = this.accounts[this.exchangeId][accountID];
+    }
     const feeTokenID = this.tokenAddressToIDMap.get(feeToken);
     const withdrawalRequest: WithdrawalRequest = {
       txType: "Withdraw",
@@ -1358,31 +1334,30 @@ export class ExchangeTestUtil {
       originalMaxFee: maxFee,
       to,
       storeRecipient,
-      extraData,
       withdrawalFee: await this.loopringV3.forcedWithdrawalFee(),
       minGas,
       gas,
-      onchainDataHash
+      onchainDataHash,
+      useAppKey
+    };
+    const appKeyPair: KeyPair = {
+      publicKeyX: account.appKeyPublicKeyX,
+      publicKeyY: account.appKeyPublicKeyY,
+      secretKey: account.appKeySecretKey
     };
 
     if (authMethod === AuthMethod.EDDSA) {
-      WithdrawalUtils.sign(account, withdrawalRequest);
+      console.log("account id:" + account.accountID)
+      console.log("account public keyX:" + account.publicKeyX)
+      console.log("account public keyY:" + account.publicKeyY)
+      console.log("account owner:" + account.owner)
+      WithdrawalUtils.sign(useAppKey == 1 ? appKeyPair : account, withdrawalRequest);
     } else if (authMethod === AuthMethod.ECDSA) {
-      const hash = WithdrawalUtils.getHash(
-        withdrawalRequest,
-        this.exchange.address
-      );
-      withdrawalRequest.onchainSignature = await sign(
-        owner,
-        hash,
-        SignatureType.EIP_712
-      );
+      const hash = WithdrawalUtils.getHash(withdrawalRequest, this.exchange.address);
+      withdrawalRequest.onchainSignature = await sign(owner, hash, SignatureType.EIP_712);
       await verifySignature(owner, hash, withdrawalRequest.onchainSignature);
     } else if (authMethod === AuthMethod.APPROVE) {
-      const hash = WithdrawalUtils.getHash(
-        withdrawalRequest,
-        this.exchange.address
-      );
+      const hash = WithdrawalUtils.getHash(withdrawalRequest, this.exchange.address);
       await this.exchange.approveTransaction(owner, hash, { from: owner });
     }
 
@@ -1405,10 +1380,9 @@ export class ExchangeTestUtil {
     fee = roundToFloatValue(fee, Constants.Float16Encoding);
 
     // Fill in defaults
-    const authMethod =
-      options.authMethod !== undefined ? options.authMethod : AuthMethod.EDDSA;
-    const validUntil =
-      options.validUntil !== undefined ? options.validUntil : 0xffffffff;
+    const authMethod = options.authMethod !== undefined ? options.authMethod : AuthMethod.EDDSA;
+    const validUntil = options.validUntil !== undefined ? options.validUntil : 0xffffffff;
+    const appointedAccountID = options.appointedAccountID !== undefined ? options.appointedAccountID : this.accounts[this.exchangeId].length;
     const maxFee = options.maxFee !== undefined ? options.maxFee : fee;
 
     // Type
@@ -1426,11 +1400,14 @@ export class ExchangeTestUtil {
     let account = this.findAccount(owner);
     if (account === undefined) {
       account = {
-        accountID: this.accounts[this.exchangeId].length,
+        accountID: appointedAccountID,
         owner: owner,
         publicKeyX: "0",
         publicKeyY: "0",
+        appKeyPublicKeyX: "0",
+        appKeyPublicKeyY: "0",
         secretKey: "0",
+        appKeySecretKey: "0",
         nonce: 0
       };
       this.accounts[this.exchangeId].push(account);
@@ -1457,26 +1434,25 @@ export class ExchangeTestUtil {
     if (authMethod === AuthMethod.EDDSA) {
       // New accounts should not be able to set keys with EDDSA.
       // Try to sign with the keys we're setting (which shouldn't work).
-      accountUpdate.signature = AccountUpdateUtils.sign(
-        isNewAccount ? keyPair : account,
-        accountUpdate
-      );
+      accountUpdate.signature = AccountUpdateUtils.sign(isNewAccount ? keyPair : account, accountUpdate);
     } else if (authMethod === AuthMethod.ECDSA) {
-      const hash = AccountUpdateUtils.getHash(
-        accountUpdate,
-        this.exchange.address
-      );
-      accountUpdate.onchainSignature = await sign(
-        owner,
-        hash,
-        SignatureType.EIP_712
+      const tempAccountID = accountUpdate.accountID;
+      if (accountUpdate.nonce == 0) {
+        accountUpdate.accountID = 0;
+      }
+      const hash = AccountUpdateUtils.getHash(accountUpdate, this.exchange.address);
+      accountUpdate.accountID = tempAccountID;
+      accountUpdate.onchainSignature = await sign(owner, hash, SignatureType.EIP_712);
+      console.log("accountUpdate: ", accountUpdate);
+      let acPublicKey = new BN(EdDSA.pack(accountUpdate.publicKeyX, accountUpdate.publicKeyY), 16);
+      console.log("accountUpdate.publicKey: ", acPublicKey.toString(10));
+
+      console.log(
+        "onchainSignature sign: " + owner + "," + hash.toString("hex") + "," + accountUpdate.onchainSignature
       );
       await verifySignature(owner, hash, accountUpdate.onchainSignature);
     } else if (authMethod === AuthMethod.APPROVE) {
-      const hash = AccountUpdateUtils.getHash(
-        accountUpdate,
-        this.exchange.address
-      );
+      const hash = AccountUpdateUtils.getHash(accountUpdate, this.exchange.address);
       await this.exchange.approveTransaction(owner, hash, { from: owner });
     }
 
@@ -1492,98 +1468,174 @@ export class ExchangeTestUtil {
     account.publicKeyY = keyPair.publicKeyY;
     account.secretKey = keyPair.secretKey;
 
+    console.log("update account id:" + account.accountID)
+    console.log("update account publicKeyX:" + account.publicKeyX)
+    console.log("update account publicKeyY:" + account.publicKeyY)
+    console.log("update account owner:" + account.owner)
+
     return accountUpdate;
   }
-
-  public async requestAmmUpdate(
+  public async requestAppKeyUpdate(
     owner: string,
-    token: string,
-    feeBips: number,
-    tokenWeight: BN,
-    options: AmmUpdateOptions = {}
+    feeToken: string,
+    fee: BN,
+    keyPair: any,
+    disableAppKeySpotTrade: number,
+    disableAppKeyWithdraw: number,
+    disableAppKeyTransferToOther: number,
+    options: AccountUpdateOptions = {}
   ) {
+    fee = roundToFloatValue(fee, Constants.Float16Encoding);
+
     // Fill in defaults
-    const authMethod =
-      options.authMethod !== undefined ? options.authMethod : AuthMethod.ECDSA;
-    const validUntil =
-      options.validUntil !== undefined ? options.validUntil : 0xffffffff;
+    const validUntil = options.validUntil !== undefined ? options.validUntil : 0xffffffff;
+    const maxFee = options.maxFee !== undefined ? options.maxFee : fee;
 
-    if (!token.startsWith("0x")) {
-      token = this.testContext.tokenSymbolAddrMap.get(token);
+    if (!feeToken.startsWith("0x")) {
+      feeToken = this.testContext.tokenSymbolAddrMap.get(feeToken);
     }
-    const tokenID = this.tokenAddressToIDMap.get(token);
+    const feeTokenID = this.tokenAddressToIDMap.get(feeToken);
 
-    const account = this.findAccount(owner);
+    let account = this.findAccount(owner);
+    if (account === undefined) {
+      console.log("account not exist");
+      return;
+    }
 
-    const ammUpdate: AmmUpdate = {
-      txType: "AmmUpdate",
+    const appKeyUpdate: AppKeyUpdate = {
+      txType: "AppKeyUpdate",
       exchange: this.exchange.address,
-      owner,
       accountID: account.accountID,
-      tokenID,
-      feeBips,
-      tokenWeight,
+      nonce: account.nonce++,
       validUntil,
-      nonce: account.nonce++
+      appKeyPublicKeyX: keyPair.publicKeyX,
+      appKeyPublicKeyY: keyPair.publicKeyY,
+      feeTokenID,
+      fee,
+      maxFee,
+      originalMaxFee: maxFee,
+      disableAppKeySpotTrade: disableAppKeySpotTrade,
+      disableAppKeyWithdraw: disableAppKeyWithdraw,
+      disableAppKeyTransferToOther: disableAppKeyTransferToOther
     };
 
-    // Aprove
-    if (authMethod === AuthMethod.ECDSA) {
-      const hash = AmmUpdateUtils.getHash(ammUpdate, this.exchange.address);
-      ammUpdate.onchainSignature = await sign(
-        owner,
-        hash,
-        SignatureType.EIP_712
-      );
-      await verifySignature(owner, hash, ammUpdate.onchainSignature);
-    } else if (authMethod === AuthMethod.APPROVE) {
-      const hash = AmmUpdateUtils.getHash(ammUpdate, this.exchange.address);
-      await this.exchange.approveTransaction(owner, hash, { from: owner });
-    }
+    // Sign the public key update
+    // need to use the key of account to sign eddsa
+    appKeyUpdate.signature = this.appKeyUpdateSign(account, appKeyUpdate);
 
-    this.pendingTransactions[this.exchangeId].push(ammUpdate);
+    // Set the max fee to the fee so that it can always pass through the circuit
+    appKeyUpdate.maxFee = appKeyUpdate.fee;
+    this.pendingTransactions[this.exchangeId].push(appKeyUpdate);
 
-    return ammUpdate;
+    // Update local account state
+    account.appKeyPublicKeyX = keyPair.publicKeyX;
+    account.appKeyPublicKeyY = keyPair.publicKeyY;
+    account.appKeySecretKey = keyPair.secretKey;
+
+    return appKeyUpdate;
   }
 
-  public async requestSignatureVerification(
+  public appKeyUpdateSign(keyPair: any, update: AppKeyUpdate) {
+    // Calculate hash
+    const hasher = Poseidon.createHash(12, 6, 53);
+    const inputs = [
+      update.exchange,
+      update.accountID,
+      update.feeTokenID,
+      update.maxFee,
+      update.appKeyPublicKeyX,
+      update.appKeyPublicKeyY,
+      update.validUntil,
+      update.nonce,
+      update.disableAppKeySpotTrade,
+      update.disableAppKeyWithdraw,
+      update.disableAppKeyTransferToOther
+    ];
+    const hash = hasher(inputs).toString(10);
+
+    // Create signature
+    const signature = EdDSA.sign(keyPair.secretKey, hash);
+
+    // Verify signature
+    const success = EdDSA.verify(hash, signature, [keyPair.publicKeyX, keyPair.publicKeyY]);
+    assert(success, "Failed to verify signature");
+
+    return signature;
+  }
+
+  public async requestOrderCancel(
     owner: string,
-    data: string,
-    options: SignatureVerificationOptions = {}
+    storageID: number,
+    fee: BN,
+    maxFee: BN,
+    feeToken: string,
+    useAppKey?: number
   ) {
-    // Fill in defaults
-    const dataToSign =
-      options.dataToSign !== undefined ? options.dataToSign : data;
-
+    if (!feeToken.startsWith("0x")) {
+      feeToken = this.testContext.tokenSymbolAddrMap.get(feeToken);
+    }
+    const feeTokenID = this.tokenAddressToIDMap.get(feeToken);
     const account = this.findAccount(owner);
-
-    const value = new BN(dataToSign, 10);
-    const cap = new BN(2).pow(new BN(253));
-    assert(value.lt(cap), "data value too big");
-
-    const signatureVerification: SignatureVerification = {
-      txType: "SignatureVerification",
+    useAppKey = useAppKey !== undefined ? useAppKey : 0;
+    const orderCancel: OrderCancel = {
+      txType: "OrderCancel",
       exchange: this.exchange.address,
-      owner,
       accountID: account.accountID,
-      data: dataToSign
+      storageID: storageID,
+      fee: fee,
+      maxFee: maxFee,
+      feeTokenID: feeTokenID,
+      useAppKey: useAppKey
     };
-
-    // Approve
-    signatureVerification.signature = SignatureVerificationUtils.sign(
-      account,
-      signatureVerification
+    console.log(
+      "feeToken:" +
+        feeToken +
+        ";" +
+        feeTokenID +
+        ";exchange:" +
+        orderCancel.exchange +
+        ";" +
+        orderCancel.accountID +
+        ";" +
+        orderCancel.storageID +
+        ";" +
+        orderCancel.maxFee +
+        ";" +
+        orderCancel.feeTokenID
     );
+    const hasher = Poseidon.createHash(7, 6, 52);
+    const inputs = [
+      orderCancel.exchange,
+      orderCancel.accountID,
+      orderCancel.storageID,
+      orderCancel.maxFee,
+      orderCancel.feeTokenID,
+      orderCancel.useAppKey
+    ];
+    orderCancel.hash = hasher(inputs).toString(10);
 
-    signatureVerification.data = data;
-    this.pendingTransactions[this.exchangeId].push(signatureVerification);
+    // Create signature
+    orderCancel.signature = EdDSA.sign(useAppKey == 1 ? account.appKeySecretKey : account.secretKey, orderCancel.hash);
 
-    return signatureVerification;
+    // Verify signature
+    const publicKeyX = useAppKey == 1 ? account.appKeyPublicKeyX : account.publicKeyX;
+    const publicKeyY = useAppKey == 1 ? account.appKeyPublicKeyY : account.publicKeyY;
+    const success = EdDSA.verify(orderCancel.hash, orderCancel.signature, [publicKeyX, publicKeyY]);
+
+    assert(success, "in requestOrderCancel Failed to verify signature");
+    this.pendingTransactions[this.exchangeId].push(orderCancel);
+    return orderCancel;
   }
 
   public sendRing(ring: SpotTrade) {
     ring.txType = "SpotTrade";
     this.pendingTransactions[this.exchangeId].push(ring);
+  }
+
+  public sendBatchSpotTrade(batchSpotTrade: BatchSpotTrade) {
+    batchSpotTrade.txType = "BatchSpotTrade";
+
+    this.pendingTransactions[this.exchangeId].push(batchSpotTrade);
   }
 
   public ensureDirectoryExists(filePath: string) {
@@ -1595,17 +1647,10 @@ export class ExchangeTestUtil {
     fs.mkdirSync(dirname);
   }
 
-  public async createBlock(
-    exchangeID: number,
-    blockType: BlockType,
-    data: string,
-    validate: boolean = true
-  ) {
+  public async createBlock(exchangeID: number, blockType: BlockType, data: string, validate: boolean = true) {
     const nextBlockIdx = this.blocks[exchangeID].length;
-    const inputFilename =
-      "./blocks/block_" + exchangeID + "_" + nextBlockIdx + "_info.json";
-    const outputFilename =
-      "./blocks/block_" + exchangeID + "_" + nextBlockIdx + ".json";
+    const inputFilename = "./blocks/block_" + exchangeID + "_" + nextBlockIdx + "_info.json";
+    const outputFilename = "./blocks/block_" + exchangeID + "_" + nextBlockIdx + ".json";
 
     this.ensureDirectoryExists(inputFilename);
     fs.writeFileSync(inputFilename, data, "utf8");
@@ -1613,15 +1658,9 @@ export class ExchangeTestUtil {
     // Create the block
     const result = childProcess.spawnSync(
       "python3",
-      [
-        "operator/create_block.py",
-        "" + exchangeID,
-        "" + nextBlockIdx,
-        "" + blockType,
-        inputFilename,
-        outputFilename
-      ],
-      { stdio: doDebugLogging() ? "inherit" : "ignore" }
+      ["operator/create_block.py", "" + exchangeID, "" + nextBlockIdx, "" + blockType, inputFilename, outputFilename],
+      // { stdio: doDebugLogging() ? "inherit" : "ignore" }
+      { stdio: "inherit" }
     );
     assert(result.status === 0, "create_block failed: " + blockType);
 
@@ -1642,8 +1681,7 @@ export class ExchangeTestUtil {
   }
 
   public getPublicDataHashAndInput(data: string) {
-    const publicDataHash =
-      "0x" + SHA256(Buffer.from(data.slice(2), "hex")).toString("hex");
+    const publicDataHash = "0x" + SHA256(Buffer.from(data.slice(2), "hex")).toString("hex");
     return {
       publicDataHash,
       publicInput: this.hashToFieldElement(publicDataHash)
@@ -1652,10 +1690,12 @@ export class ExchangeTestUtil {
 
   public async validateBlock(filename: string) {
     // Validate the block
+    console.log("before childProcess.spawnSync filename:" + filename);
     const result = childProcess.spawnSync(
       "build/circuit/dex_circuit",
       ["-validate", filename],
-      { stdio: doDebugLogging() ? "inherit" : "ignore" }
+      // { stdio: doDebugLogging() ? "inherit" : "ignore" }
+      { stdio: "inherit" }
     );
     assert(result.status === 0, "invalid block: " + filename);
   }
@@ -1672,25 +1712,28 @@ export class ExchangeTestUtil {
     const publicDataHashAndInput = this.getPublicDataHashAndInput(data);
     const publicDataHash = publicDataHashAndInput.publicDataHash;
     const publicInput = publicDataHashAndInput.publicInput;
-    logDebug("- " + filename);
-    logDebug("[EVM]PublicData: " + data);
-    logDebug("[EVM]PublicDataHash: " + publicDataHash);
-    logDebug("[EVM]PublicInput: " + publicInput);
-    logDebug("[EVM]AuxiliaryData: " + auxiliaryData);
+    console.log("- " + filename);
+    console.log("[EVM]PublicData: " + data);
+    console.log("[EVM]PublicDataHash: " + publicDataHash);
+    console.log("[EVM]PublicInput: " + publicInput);
+    console.log("[EVM]AuxiliaryData: " + auxiliaryData);
 
     // Make sure the keys are generated
+    console.log("in commitBlock before registerCircuit");
     await this.registerCircuit(blockType, blockSize, 0);
 
     const blockVersion = 0;
-    let offchainData =
-      this.getRandomInt(2) === 0
-        ? "0x0ff" + this.blocks[this.exchangeId].length
-        : "0x";
+    let offchainData = this.getRandomInt(2) === 0 ? "0x0ff" + this.blocks[this.exchangeId].length : "0x";
     if (offchainData.length % 2 == 1) {
       offchainData += "0";
     }
 
     const blockFile = JSON.parse(fs.readFileSync(filename, "ascii"));
+
+    logDebug("[EVM]Block merkleRoot: " + "0x" + new BN(blockFile.merkleRootAfter, 10).toString(16, 64));
+
+    logDebug("[EVM]Block merkleAssetRoot: " + "0x" + new BN(blockFile.merkleAssetRootAfter, 10).toString(16, 64));
+
     const block: Block = {
       blockIdx: this.blocks[this.exchangeId].length,
       filename,
@@ -1701,6 +1744,7 @@ export class ExchangeTestUtil {
       origin: this.exchangeOperator,
       operatorId,
       merkleRoot: "0x" + new BN(blockFile.merkleRootAfter, 10).toString(16, 64),
+      merkleAssetRoot: "0x" + new BN(blockFile.merkleAssetRootAfter, 10).toString(16, 64),
       data,
       auxiliaryData,
       offchainData,
@@ -1715,37 +1759,29 @@ export class ExchangeTestUtil {
     this.pendingBlocks[this.exchangeId].push(block);
     this.blocks[this.exchangeId].push(block);
 
+    console.log("in commitBlock after return block");
     return block;
   }
 
-  public async registerCircuit(
-    blockType: BlockType,
-    blockSize: number,
-    blockVersion: number
-  ) {
-    const blockFilename =
-      "./blocks/protoblock_" + blockType + "_blockSize_" + blockSize + ".json";
+  public async registerCircuit(blockType: BlockType, blockSize: number, blockVersion: number) {
+    const blockFilename = "./blocks/protoblock_" + blockType + "_blockSize_" + blockSize + ".json";
 
     const block: any = {};
     block.blockType = blockType;
     block.blockSize = blockSize;
-    fs.writeFileSync(
-      blockFilename,
-      JSON.stringify(block, undefined, 4),
-      "ascii"
-    );
+    fs.writeFileSync(blockFilename, JSON.stringify(block, undefined, 4), "ascii");
 
+    console.log("before check isCircuitRegistered");
     const isCircuitRegistered = await this.blockVerifier.isCircuitRegistered(
       block.blockType,
       block.blockSize,
       blockVersion
     );
     if (!isCircuitRegistered) {
-      const result = childProcess.spawnSync(
-        "build/circuit/dex_circuit",
-        ["-createkeys", blockFilename],
-        { stdio: doDebugLogging() ? "inherit" : "ignore" }
-      );
+      console.log("before create keys");
+      const result = childProcess.spawnSync("build/circuit/dex_circuit", ["-createkeys", blockFilename], {
+        stdio: doDebugLogging() ? "inherit" : "ignore"
+      });
       assert(result.status === 0, "generateKeys failed: " + blockFilename);
 
       let verificationKeyFilename = "keys/";
@@ -1757,12 +1793,8 @@ export class ExchangeTestUtil {
       const vkFlattened = this.flattenList(this.flattenVK(vk));
       // console.log(vkFlattened);
 
-      await this.blockVerifier.registerCircuit(
-        block.blockType,
-        block.blockSize,
-        blockVersion,
-        vkFlattened
-      );
+      console.log("before registerCircuit");
+      await this.blockVerifier.registerCircuit(block.blockType, block.blockSize, blockVersion, vkFlattened);
     }
   }
 
@@ -1809,67 +1841,6 @@ export class ExchangeTestUtil {
     }
   }
 
-  public getCallbackConfig(blockCallbacks: BlockCallback[][]) {
-    interface TxCallback {
-      txIdx: number;
-      numTxs: number;
-      receiverIdx: number;
-      data: string;
-    }
-
-    interface OnchainBlockCallback {
-      blockIdx: number;
-      txCallbacks: TxCallback[];
-    }
-
-    interface CallbackConfig {
-      blockCallbacks: OnchainBlockCallback[];
-      receivers: string[];
-    }
-
-    const callbackConfig: CallbackConfig = {
-      blockCallbacks: [],
-      receivers: []
-    };
-
-    //console.log("Block callbacks: ");
-    for (const [blockIdx, callbacks] of blockCallbacks.entries()) {
-      //console.log(blockIdx);
-      //console.log(block.callbacks);
-      if (callbacks.length > 0) {
-        const onchainBlockCallback: OnchainBlockCallback = {
-          blockIdx,
-          txCallbacks: []
-        };
-        callbackConfig.blockCallbacks.push(onchainBlockCallback);
-
-        for (const blockCallback of callbacks) {
-          // Find receiver index
-          let receiverIdx = callbackConfig.receivers.findIndex(
-            target => target === blockCallback.target
-          );
-          if (receiverIdx === -1) {
-            receiverIdx = callbackConfig.receivers.length;
-            callbackConfig.receivers.push(blockCallback.target);
-          }
-          // Add the block callback to the list
-          onchainBlockCallback.txCallbacks.push({
-            txIdx: blockCallback.txIdx,
-            numTxs: blockCallback.numTxs,
-            receiverIdx,
-            data: blockCallback.auxiliaryData
-          });
-        }
-        //console.log(onchainBlockCallback);
-      }
-    }
-    //console.log(callbackConfig);
-    //for (const bc of callbackConfig.blockCallbacks) {
-    //  console.log(bc);
-    //}
-    return callbackConfig;
-  }
-
   public setPreApprovedTransactions(blocks: Block[]) {
     for (const block of blocks) {
       for (const blockCallback of block.callbacks) {
@@ -1890,13 +1861,12 @@ export class ExchangeTestUtil {
     const encodedAuxiliaryData = web3.eth.abi.encodeParameter(
       {
         "struct AuxiliaryData[]": {
-          txIndex: "uint",
-          approved: "bool",
           data: "bytes"
         }
       },
       auxiliaryData
     );
+
     return encodedAuxiliaryData;
   }
 
@@ -1941,32 +1911,18 @@ export class ExchangeTestUtil {
     return this.exchange.contract.methods.submitBlocks(blocks).encodeABI();
   }
 
-  public getSubmitBlocksWithCallbacks(parameters: any) {
+  public getSubmitBlocks(parameters: any) {
     const operatorContract = this.operator ? this.operator : this.exchange;
-    return operatorContract.contract.methods
-      .submitBlocksWithCallbacks(
-        parameters.isDataCompressed,
-        parameters.data,
-        parameters.callbackConfig
-      )
-      .encodeABI();
+    return operatorContract.contract.methods.submitBlocks(parameters.isDataCompressed, parameters.data).encodeABI();
   }
 
-  public getSubmitBlocksWithCallbacksData(
-    isDataCompressed: boolean,
-    txData: string,
-    blockCallbacks: BlockCallback[][]
-  ) {
+  public getSubmitBlocksData(isDataCompressed: boolean, txData: string) {
     const data = isDataCompressed ? compressZeros(txData) : txData;
     //console.log(data);
 
-    // Block callbacks
-    const callbackConfig = this.getCallbackConfig(blockCallbacks);
-
     return {
       isDataCompressed,
-      data,
-      callbackConfig
+      data
     };
   }
 
@@ -1981,26 +1937,22 @@ export class ExchangeTestUtil {
 
     // Generate proofs
     for (const [i, block] of blocks.entries()) {
+      console.log("submitBlocks: " + block.filename);
+
       const blockData = JSON.parse(fs.readFileSync(block.filename, "ascii"));
 
-      const proofFilename =
-        "./blocks/block_" +
-        this.exchangeId +
-        "_" +
-        block.blockIdx +
-        "_proof.json";
+      const proofFilename = "./blocks/block_" + this.exchangeId + "_" + block.blockIdx + "_proof.json";
 
-      //console.log("Generating proof: " + proofFilename);
+      console.log("Generating proof: " + proofFilename);
 
       if (this.useProverServer) {
         const key = this.getKey(block);
         if (!this.proverPorts.has(key)) {
           const port = this.portGenerator++;
-          const process = childProcess.spawn(
-            "build/circuit/dex_circuit",
-            ["-server", block.filename, "" + port],
-            { detached: false, stdio: doDebugLogging() ? "inherit" : "ignore" }
-          );
+          const process = childProcess.spawn("build/circuit/dex_circuit", ["-server", block.filename, "" + port], {
+            detached: false,
+            stdio: doDebugLogging() ? "inherit" : "ignore"
+          });
           let connected = false;
           let numTries = 0;
           while (!connected) {
@@ -2021,22 +1973,16 @@ export class ExchangeTestUtil {
         }
         const port = this.proverPorts.get(key);
         // Generate the proof
-        let proveQuery =
-          "http://localhost/prove?block_filename=" + block.filename;
+        let proveQuery = "http://localhost/prove?block_filename=" + block.filename;
         proveQuery += "&proof_filename=" + proofFilename;
         proveQuery += "&validate=true";
         await this.httpGetSync(proveQuery, port);
       } else {
         // Generate the proof by starting a dedicated circuit binary app instance
-        const result = childProcess.spawnSync(
-          "build/circuit/dex_circuit",
-          ["-prove", block.filename, proofFilename],
-          { stdio: doDebugLogging() ? "inherit" : "ignore" }
-        );
-        assert(
-          result.status === 0,
-          "Block proof generation failed: " + block.filename
-        );
+        const result = childProcess.spawnSync("build/circuit/dex_circuit", ["-prove", block.filename, proofFilename], {
+          stdio: doDebugLogging() ? "inherit" : "ignore"
+        });
+        assert(result.status === 0, "Block proof generation failed: " + block.filename);
       }
 
       // Read the proof
@@ -2064,6 +2010,8 @@ export class ExchangeTestUtil {
       );
       onchainBlocks.push(onchainBlock);
       blockCallbacks.push(block.callbacks);
+
+      console.log("onchainBlock.auxiliaryData: ", onchainBlock.auxiliaryData);
     }
 
     // Callback that allows modifying the blocks
@@ -2071,31 +2019,15 @@ export class ExchangeTestUtil {
       testCallback(onchainBlocks, blocks);
     }
 
-    const numBlocksSubmittedBefore = (
-      await this.exchange.getBlockHeight()
-    ).toNumber();
+    const numBlocksSubmittedBefore = (await this.exchange.getBlockHeight()).toNumber();
 
     // Forced requests
-    const numAvailableSlotsBefore = (
-      await this.exchange.getNumAvailableForcedSlots()
-    ).toNumber();
+    const numAvailableSlotsBefore = (await this.exchange.getNumAvailableForcedSlots()).toNumber();
 
     // SubmitBlocks raw tx data
     const txData = this.getSubmitCallbackData(onchainBlocks);
-    //console.log(txData);
 
-    // const gasTokenConfig: GasTokenConfig = {
-    //   gasTokenVault: Constants.zeroAddress,
-    //   maxToBurn: 0,
-    //   expectedGasRefund: 0,
-    //   calldataCost: 0
-    // };
-
-    const parameters = this.getSubmitBlocksWithCallbacksData(
-      true,
-      txData,
-      blockCallbacks
-    );
+    const parameters = this.getSubmitBlocksData(true, txData);
 
     // Submit the blocks onchain
     const operatorContract = this.operator ? this.operator : this.exchange;
@@ -2131,14 +2063,12 @@ export class ExchangeTestUtil {
     }
     //console.log("num deposits: " + numDeposits);
 
-    const msg_data = this.getSubmitBlocksWithCallbacks(parameters);
-    // console.log("submitBlocksWithCallbacks msg_data:", msg_data);
+    const msg_data = this.getSubmitBlocks(parameters);
 
     let tx: any = undefined;
-    tx = await operatorContract.submitBlocksWithCallbacks(
+    tx = await operatorContract.submitBlocks(
       parameters.isDataCompressed,
       parameters.data,
-      parameters.callbackConfig,
       //txData,
       { from: this.exchangeOperator, gasPrice: 0 }
     );
@@ -2164,42 +2094,23 @@ export class ExchangeTestUtil {
       blockCallbacks,
       { from: this.exchangeOperator, gasPrice: 0 }
     );*/
-    logInfo(
-      "\x1b[46m%s\x1b[0m",
-      "[submitBlocks] Gas used: " + tx.receipt.gasUsed
-    );
+    logInfo("\x1b[46m%s\x1b[0m", "[submitBlocks] Gas used: " + tx.receipt.gasUsed);
     const ethBlock = await web3.eth.getBlock(tx.receipt.blockNumber);
 
     // Check number of blocks submitted
-    const numBlocksSubmittedAfter = (
-      await this.exchange.getBlockHeight()
-    ).toNumber();
-    assert.equal(
-      numBlocksSubmittedAfter,
-      numBlocksSubmittedBefore + blocks.length,
-      "unexpected block height"
-    );
+    console.log("testExchangeUtils: Check number of blocks submitted");
+    const numBlocksSubmittedAfter = (await this.exchange.getBlockHeight()).toNumber();
+    assert.equal(numBlocksSubmittedAfter, numBlocksSubmittedBefore + blocks.length, "unexpected block height");
 
     // Check the BlockSubmitted event(s)
+    console.log("testExchangeUtils: Check the BlockSubmitted event");
     {
-      const events = await this.assertEventsEmitted(
-        this.exchange,
-        "BlockSubmitted",
-        blocks.length
-      );
+      const events = await this.assertEventsEmitted(this.exchange, "BlockSubmitted", blocks.length);
       for (const [i, event] of events.entries()) {
         const blockIdx = event.blockIdx.toNumber();
         assert.equal(blockIdx, blocks[i].blockIdx, "unexpected block idx");
-        assert.equal(
-          event.merkleRoot,
-          blocks[i].merkleRoot,
-          "unexpected Merkle root"
-        );
-        assert.equal(
-          event.publicDataHash,
-          blocks[i].publicDataHash,
-          "unexpected public data hash"
-        );
+        assert.equal(event.merkleRoot, blocks[i].merkleRoot, "unexpected Merkle root");
+        assert.equal(event.publicDataHash, blocks[i].publicDataHash, "unexpected public data hash");
         const block = this.blocks[this.exchangeId][event.blockIdx.toNumber()];
         block.transactionHash = tx.receipt.transactionHash;
         block.timestamp = ethBlock.timestamp;
@@ -2208,38 +2119,25 @@ export class ExchangeTestUtil {
     }
 
     // Check the new Merkle root
+    console.log("testExchangeUtils: Check the new Merkle root");
     const merkleRoot = await this.exchange.getMerkleRoot();
-    assert.equal(
-      merkleRoot,
-      blocks[blocks.length - 1].merkleRoot,
-      "unexpected Merkle root"
-    );
+    assert.equal(merkleRoot, blocks[blocks.length - 1].merkleRoot, "unexpected Merkle root");
 
     // Check the Block info stored onchain
+    console.log("testExchangeUtils: Check the Block info stored onchain");
     for (const [i, block] of blocks.entries()) {
       const blockInfo = await this.exchange.getBlockInfo(block.blockIdx);
       const expectedHash = onchainBlocks[i].storeBlockInfoOnchain
         ? block.publicDataHash.slice(0, 2 + 28 * 2)
         : "0x" + "00".repeat(28);
-      assert.equal(
-        blockInfo.blockDataHash,
-        expectedHash,
-        "unexpected blockInfo public data hash"
-      );
-      const expectedTimestamp = onchainBlocks[i].storeBlockInfoOnchain
-        ? Number(ethBlock.timestamp)
-        : 0;
-      assert.equal(
-        blockInfo.timestamp,
-        expectedTimestamp,
-        "unexpected blockInfo timestamp"
-      );
+      assert.equal(blockInfo.blockDataHash, expectedHash, "unexpected blockInfo public data hash");
+      const expectedTimestamp = onchainBlocks[i].storeBlockInfoOnchain ? Number(ethBlock.timestamp) : 0;
+      assert.equal(blockInfo.timestamp, expectedTimestamp, "unexpected blockInfo timestamp");
     }
 
     // Forced requests
-    const numAvailableSlotsAfter = (
-      await this.exchange.getNumAvailableForcedSlots()
-    ).toNumber();
+    console.log("testExchangeUtils: Forced requests");
+    const numAvailableSlotsAfter = (await this.exchange.getNumAvailableForcedSlots()).toNumber();
     let numForcedRequestsProcessed = 0;
     for (const block of blocks) {
       for (const tx of block.internalBlock.transactions) {
@@ -2254,8 +2152,7 @@ export class ExchangeTestUtil {
       "unexpected num available slots"
     );
 
-    // Check the current state against the explorer state
-    await this.checkExplorerState();
+    console.log("done submitBlocks");
   }
 
   public addBlockCallback(target: string) {
@@ -2275,9 +2172,7 @@ export class ExchangeTestUtil {
   }
 
   public async getActiveOperator(exchangeID: number) {
-    return this.activeOperator
-      ? this.activeOperator
-      : this.operators[exchangeID];
+    return this.activeOperator ? this.activeOperator : this.operators[exchangeID];
   }
 
   public async setOperatorContract(operator: any) {
@@ -2299,17 +2194,8 @@ export class ExchangeTestUtil {
   public getAccountUpdateAuxData(accountUpdate: AccountUpdate) {
     return web3.eth.abi.encodeParameter("tuple(bytes,uint96,uint32)", [
       accountUpdate.onchainSignature ? accountUpdate.onchainSignature : "0x",
-      accountUpdate.originalMaxFee
-        ? accountUpdate.originalMaxFee
-        : accountUpdate.maxFee,
+      accountUpdate.originalMaxFee ? accountUpdate.originalMaxFee : accountUpdate.maxFee,
       accountUpdate.validUntil
-    ]);
-  }
-
-  public getAmmUpdateAuxData(ammUpdate: AmmUpdate) {
-    return web3.eth.abi.encodeParameter("tuple(bytes,uint32)", [
-      ammUpdate.onchainSignature ? ammUpdate.onchainSignature : "0x",
-      ammUpdate.validUntil
     ]);
   }
 
@@ -2318,24 +2204,20 @@ export class ExchangeTestUtil {
     if (!withdrawal.to.startsWith("0x")) {
       withdrawal.to = "0x" + new BN(withdrawal.to).toString(16, 40);
     }
-    return web3.eth.abi.encodeParameter(
-      "tuple(bool,uint256,bytes,uint256,address,bytes,uint96,uint32)",
-      [
-        withdrawal.storeRecipient,
-        withdrawal.gas,
-        withdrawal.onchainSignature ? withdrawal.onchainSignature : "0x",
-        withdrawal.minGas,
-        withdrawal.to,
-        withdrawal.extraData ? withdrawal.extraData : "0x",
-        withdrawal.originalMaxFee
-          ? withdrawal.originalMaxFee
-          : withdrawal.maxFee,
-        withdrawal.validUntil
-      ]
-    );
+
+    return web3.eth.abi.encodeParameter("tuple(bool,uint256,bytes,uint248,address,uint96,uint32,uint248)", [
+      withdrawal.storeRecipient,
+      withdrawal.gas,
+      withdrawal.onchainSignature ? withdrawal.onchainSignature : "0x",
+      withdrawal.minGas,
+      withdrawal.to,
+      withdrawal.originalMaxFee ? withdrawal.originalMaxFee : withdrawal.maxFee,
+      withdrawal.validUntil,
+      withdrawal.amount
+    ]);
   }
 
-  public async submitTransactions(forcedBlockSize?: number) {
+  public async submitTransactions(forcedBlockSize?: number, justValidBlock?: boolean) {
     const exchangeID = this.exchangeId;
     const pendingTransactions = this.pendingTransactions[exchangeID];
     if (pendingTransactions.length === 0) {
@@ -2352,60 +2234,60 @@ export class ExchangeTestUtil {
       // Get all rings for the block
       const blockSize = forcedBlockSize
         ? forcedBlockSize
-        : this.getBestBlockSize(
-            pendingTransactions.length - numTransactionsDone,
-            this.blockSizes
-          );
-      const transactions: TxType[] = [];
-      for (
-        let b = numTransactionsDone;
-        b < numTransactionsDone + blockSize;
-        b++
-      ) {
+        : this.getBestBlockSize(pendingTransactions.length - numTransactionsDone, this.blockSizes);
+      const transactionsTemp: TxType[] = [];
+      for (let b = numTransactionsDone; b < numTransactionsDone + blockSize; b++) {
         if (b < pendingTransactions.length) {
-          transactions.push(pendingTransactions[b]);
+          transactionsTemp.push(pendingTransactions[b]);
         } else {
           const noop: Noop = {
             txType: "Noop"
           };
-          transactions.push(noop);
+          transactionsTemp.push(noop);
         }
       }
-      assert(transactions.length === blockSize);
+      assert(transactionsTemp.length === blockSize);
       numTransactionsDone += blockSize;
 
       const currentBlockIdx = this.blocks[exchangeID].length - 1;
 
       const protocolFees = await this.exchange.getProtocolFeeValues();
-      const protocolTakerFeeBips = protocolFees.takerFeeBips.toNumber();
-      const protocolMakerFeeBips = protocolFees.makerFeeBips.toNumber();
+      const protocolFeeBips = protocolFees.protocolFeeBips.toNumber();
+      // const protocolMakerFeeBips = protocolFees.makerFeeBips.toNumber();
+
+      const depositTransactions: TxType[] = [];
+      const accountTransactions: TxType[] = [];
+      const othersTransactions: TxType[] = [];
+      const withdrawTransactions: TxType[] = [];
+
+      for (const tx of transactionsTemp) {
+        if (tx.txType === "Deposit") {
+          depositTransactions.push(tx);
+        } else if (tx.txType === "AccountUpdate") {
+          accountTransactions.push(tx);
+        } else if (tx.txType === "Withdraw") {
+          withdrawTransactions.push(tx);
+        } else {
+          othersTransactions.push(tx);
+        }
+      }
+
+      const transactions = depositTransactions.concat(accountTransactions, othersTransactions, withdrawTransactions);
 
       for (const tx of transactions) {
         logDebug(tx.txType);
       }
 
-      const ammTransactions: any[] = [];
-      for (const callback of this.pendingBlockCallbacks[this.exchangeId]) {
-        ammTransactions.push(callback.tx);
-      }
-
       const operator = await this.getActiveOperator(exchangeID);
       const txBlock: TxBlock = {
         transactions,
-        ammTransactions,
         timestamp,
-        protocolTakerFeeBips,
-        protocolMakerFeeBips,
+        protocolFeeBips,
         exchange: this.exchange.address,
         operatorAccountID: operator
       };
 
-      // Store state before
-      const stateBefore = await Simulator.loadExchangeState(
-        exchangeID,
-        currentBlockIdx
-      );
-
+      console.log("this.createBlock...");
       // Create the block
       const { blockIdx, infoFilename, blockFilename } = await this.createBlock(
         exchangeID,
@@ -2420,32 +2302,25 @@ export class ExchangeTestUtil {
       // Create the auxiliary data
       const auxiliaryData = this.getBlockAuxiliaryData(blockInfoData);
       const blockData = this.getBlockData(block, auxiliaryData.length);
+      console.log("auxiliaryData.length: ", auxiliaryData.length);
+      console.log("auxiliaryData: ", auxiliaryData);
+      console.log("blockData: ", blockData);
 
       // Write the block signature
       const publicDataHashAndInput = this.getPublicDataHashAndInput(blockData);
 
-      logDebug("[EVM]PublicData: " + blockData);
-      logDebug("[EVM]PublicDataHash: " + publicDataHashAndInput.publicDataHash);
-      logDebug("[EVM]PublicInput: " + publicDataHashAndInput.publicInput);
+      console.log("[EVM]PublicData: " + blockData);
+      console.log("[EVM]PublicDataHash: " + publicDataHashAndInput.publicDataHash);
+      console.log("[EVM]PublicInput: " + publicDataHashAndInput.publicInput);
 
       this.signRingBlock(block, publicDataHashAndInput.publicInput);
-      fs.writeFileSync(
-        blockFilename,
-        JSON.stringify(block, undefined, 4),
-        "utf8"
-      );
-
+      fs.writeFileSync(blockFilename, JSON.stringify(block, undefined, 4), "utf8");
       // Validate the block after generating the signature
       await this.validateBlock(blockFilename);
 
-      // Load state after
-      const stateAfter = await Simulator.loadExchangeState(
-        exchangeID,
-        currentBlockIdx + 1
-      );
-
-      // Validate state change
-      Simulator.executeBlock(txBlock, stateBefore, stateAfter);
+      if (justValidBlock) {
+        return;
+      }
 
       // Commit the block
       const blockInfo = await this.commitBlock(
@@ -2483,30 +2358,226 @@ export class ExchangeTestUtil {
   public getBlockAuxiliaryData(block: any) {
     const auxiliaryData: any[] = [];
     for (const [i, transaction] of block.transactions.entries()) {
-      if (transaction.txType === "Transfer") {
-        if (transaction.type > 0) {
-          const encodedTransferData = this.getTransferAuxData(transaction);
-          auxiliaryData.push([i, false, encodedTransferData]);
-        }
-      } else if (transaction.txType === "Withdraw") {
+      if (transaction.txType === "Withdraw") {
         const encodedWithdrawalData = this.getWithdrawalAuxData(transaction);
-        auxiliaryData.push([i, false, encodedWithdrawalData]);
+        auxiliaryData.push([encodedWithdrawalData]);
       } else if (transaction.txType === "Deposit") {
-        auxiliaryData.push([i, false, "0x"]);
+        auxiliaryData.push(["0x"]);
       } else if (transaction.txType === "AccountUpdate") {
         if (transaction.type > 0) {
-          const encodedAccountUpdateData = this.getAccountUpdateAuxData(
-            transaction
-          );
-          auxiliaryData.push([i, false, encodedAccountUpdateData]);
+          const encodedAccountUpdateData = this.getAccountUpdateAuxData(transaction);
+          auxiliaryData.push([encodedAccountUpdateData]);
         }
-      } else if (transaction.txType === "AmmUpdate") {
-        const encodedAmmUpdateData = this.getAmmUpdateAuxData(transaction);
-        auxiliaryData.push([i, false, encodedAmmUpdateData]);
       }
     }
     logDebug("numConditionalTransactions: " + auxiliaryData.length);
     return auxiliaryData;
+  }
+
+  public addFloatDataForBatchSpotTrade(da: BitstreamEx, exchange: Number) {
+    const MAX = 1073741824;
+    if (exchange === undefined || exchange == 0) {
+      exchange = 0;
+    }
+    if (exchange < 0) {
+      const newExchange = -exchange;
+      const firstExchange = toFloat(new BN(newExchange.toString()), Constants.Float29Encoding);
+      da.addNumberForBits(MAX - firstExchange, 30);
+    } else {
+      const firstExchange = toFloat(new BN(exchange.toString()), Constants.Float29Encoding);
+      const recovery = fromFloat(firstExchange, Constants.Float29Encoding);
+
+      da.addNumberForBits(firstExchange, 30);
+    }
+  }
+
+  public getSingleBatchSpotTradeTokenType(
+    order: OrderInfo,
+    firstToken: Number,
+    secondToken: Number,
+    thirdToken: Number
+  ) {
+    if (order.isNoop == 1) {
+      return 0;
+    }
+    const orderTokenS = order.tokenIdS ? order.tokenIdS : Number(order.tokenS);
+    const orderTokenB = order.tokenIdB ? order.tokenIdB : Number(order.tokenB);
+    if (
+      (orderTokenS == firstToken && orderTokenB == secondToken) ||
+      (orderTokenS == secondToken && orderTokenB == firstToken)
+    ) {
+      // 00
+      return 0;
+    } else if (
+      (orderTokenS == firstToken && orderTokenB == thirdToken) ||
+      (orderTokenS == thirdToken && orderTokenB == firstToken)
+    ) {
+      // 01
+      return 1;
+    } else if (
+      (orderTokenS == secondToken && orderTokenB == thirdToken) ||
+      (orderTokenS == thirdToken && orderTokenB == secondToken)
+    ) {
+      // 10
+      return 2;
+    }
+  }
+
+  public feedBatchSpotTradeTokenType(da: BitstreamEx, batchSpotTrade: BatchSpotTrade) {
+    var secondUserTokenType = 0;
+    var thirdUserTokenType = 0;
+    var fourthUserTokenType = 0;
+    var fifthUserTokenType = 0;
+    var sixthUserTokenType = 0;
+    const firstToken = batchSpotTrade.tokens[0];
+    const secondToken = batchSpotTrade.tokens[1];
+    const thirdToken = batchSpotTrade.tokens[2];
+    if (batchSpotTrade.users.length >= 2) {
+      secondUserTokenType = this.getSingleBatchSpotTradeTokenType(
+        batchSpotTrade.users[1].orders[0],
+        firstToken,
+        secondToken,
+        thirdToken
+      );
+      console.log("firstToken:" + firstToken + ";secondToken:" + secondToken + ";thirdToken:" + thirdToken);
+    }
+    if (batchSpotTrade.users.length >= 3) {
+      thirdUserTokenType = this.getSingleBatchSpotTradeTokenType(
+        batchSpotTrade.users[2].orders[0],
+        firstToken,
+        secondToken,
+        thirdToken
+      );
+    }
+    if (batchSpotTrade.users.length >= 4) {
+      fourthUserTokenType = this.getSingleBatchSpotTradeTokenType(
+        batchSpotTrade.users[3].orders[0],
+        firstToken,
+        secondToken,
+        thirdToken
+      );
+    }
+    if (batchSpotTrade.users.length >= 5) {
+      fifthUserTokenType = this.getSingleBatchSpotTradeTokenType(
+        batchSpotTrade.users[4].orders[0],
+        firstToken,
+        secondToken,
+        thirdToken
+      );
+    }
+    if (batchSpotTrade.users.length >= 6) {
+      sixthUserTokenType = this.getSingleBatchSpotTradeTokenType(
+        batchSpotTrade.users[5].orders[0],
+        firstToken,
+        secondToken,
+        thirdToken
+      );
+    }
+    // 10 -> 10000000
+    // 2 -> 128 = 2 * 2^6
+    var tokenType = secondUserTokenType * 64;
+    // 10 -> 100000
+    // 2 -> 32 = 2 * 2^4
+    tokenType = tokenType + thirdUserTokenType * 16;
+    // 10 -> 1000
+    // 2 -> 8 = 2 * 2^2
+    tokenType = tokenType + fourthUserTokenType * 4;
+    // 10 -> 10
+    // 2 -> 2
+    tokenType = tokenType + fifthUserTokenType;
+    da.addNumberForBits(tokenType, 8);
+    da.addNumberForBits(sixthUserTokenType, 2);
+    return [secondUserTokenType, thirdUserTokenType, fourthUserTokenType, fifthUserTokenType, sixthUserTokenType];
+  }
+
+  public feedBatchSpotTradeOtherUserAmountExchangePublicData(
+    da: BitstreamEx,
+    typeType: Number,
+    firstTokenExchange: Number,
+    secondTokenExchange: Number,
+    thirdTokenExchange: Number
+  ) {
+    if (typeType == 0) {
+      this.addFloatDataForBatchSpotTrade(da, firstTokenExchange);
+      this.addFloatDataForBatchSpotTrade(da, secondTokenExchange);
+    } else if (typeType == 1) {
+      this.addFloatDataForBatchSpotTrade(da, firstTokenExchange);
+      this.addFloatDataForBatchSpotTrade(da, thirdTokenExchange);
+    } else if (typeType == 2) {
+      this.addFloatDataForBatchSpotTrade(da, secondTokenExchange);
+      this.addFloatDataForBatchSpotTrade(da, thirdTokenExchange);
+    }
+  }
+
+  public feedBatchSpotTradePublicData(da: BitstreamEx, batchSpotTrade: BatchSpotTrade, bindTokenID: number) {
+    const firstOrder = batchSpotTrade.users[0].orders[0];
+    
+    console.log("bindTokenID Token:" + bindTokenID);
+
+    da.addNumberForBits(batchSpotTrade.tokens[0], 32);
+    da.addNumberForBits(batchSpotTrade.tokens[1], 32);
+    console.log("ID 0:" + batchSpotTrade.tokens[0]);
+    console.log("ID 1:" + batchSpotTrade.tokens[1]);
+    da.print();
+
+    const tokenTypes = this.feedBatchSpotTradeTokenType(da, batchSpotTrade);
+
+    da.print();
+    da.addNumberForBits(batchSpotTrade.userBAccountID ? batchSpotTrade.userBAccountID : 0, 32);
+    this.feedBatchSpotTradeOtherUserAmountExchangePublicData(
+      da,
+      tokenTypes[0],
+      batchSpotTrade.userBFirstTokenExchange,
+      batchSpotTrade.userBSecondTokenExchange,
+      batchSpotTrade.userBThirdTokenExchange
+    );
+    da.print();
+
+    da.addNumberForBits(batchSpotTrade.userCAccountID ? batchSpotTrade.userCAccountID : 0, 32);
+    this.feedBatchSpotTradeOtherUserAmountExchangePublicData(
+      da,
+      tokenTypes[1],
+      batchSpotTrade.userCFirstTokenExchange,
+      batchSpotTrade.userCSecondTokenExchange,
+      batchSpotTrade.userCThirdTokenExchange
+    );
+    da.print();
+
+    da.addNumberForBits(batchSpotTrade.userDAccountID ? batchSpotTrade.userDAccountID : 0, 32);
+    this.feedBatchSpotTradeOtherUserAmountExchangePublicData(
+      da,
+      tokenTypes[2],
+      batchSpotTrade.userDFirstTokenExchange,
+      batchSpotTrade.userDSecondTokenExchange,
+      batchSpotTrade.userDThirdTokenExchange
+    );
+    da.print();
+
+    da.addNumberForBits(batchSpotTrade.userEAccountID ? batchSpotTrade.userEAccountID : 0, 32);
+    this.feedBatchSpotTradeOtherUserAmountExchangePublicData(
+      da,
+      tokenTypes[3],
+      batchSpotTrade.userEFirstTokenExchange,
+      batchSpotTrade.userESecondTokenExchange,
+      batchSpotTrade.userEThirdTokenExchange
+    );
+    da.print();
+
+    da.addNumberForBits(batchSpotTrade.userFAccountID ? batchSpotTrade.userFAccountID : 0, 32);
+    this.feedBatchSpotTradeOtherUserAmountExchangePublicData(
+      da,
+      tokenTypes[4],
+      batchSpotTrade.userFFirstTokenExchange,
+      batchSpotTrade.userFSecondTokenExchange,
+      batchSpotTrade.userFThirdTokenExchange
+    );
+    da.print();
+
+    da.addNumberForBits(batchSpotTrade.userAAccountID ? batchSpotTrade.userAAccountID : 0, 32);
+    this.addFloatDataForBatchSpotTrade(da, batchSpotTrade.userAFirstTokenExchange);
+    this.addFloatDataForBatchSpotTrade(da, batchSpotTrade.userASecondTokenExchange);
+    this.addFloatDataForBatchSpotTrade(da, batchSpotTrade.userAThirdTokenExchange);
+    da.print();
   }
 
   public getBlockData(block: any, numConditionalTransactions: number) {
@@ -2515,134 +2586,178 @@ export class ExchangeTestUtil {
     bs.addBN(new BN(block.exchange), 20);
     bs.addBN(new BN(block.merkleRootBefore, 10), 32);
     bs.addBN(new BN(block.merkleRootAfter, 10), 32);
+    bs.addBN(new BN(block.merkleAssetRootBefore, 10), 32);
+    bs.addBN(new BN(block.merkleAssetRootAfter, 10), 32);
     bs.addNumber(block.timestamp, 4);
-    bs.addNumber(block.protocolTakerFeeBips, 1);
-    bs.addNumber(block.protocolMakerFeeBips, 1);
+    bs.addNumber(block.protocolFeeBips, 1);
     bs.addNumber(numConditionalTransactions, 4);
     bs.addNumber(block.operatorAccountID, 4);
+    // Deposit、AccountUpdate、Withdraw transaction's count
+    var depositSize = 0;
+    var accountUpdateSize = 0;
+    var withdrawSize = 0;
+    for (const tx of block.transactions) {
+      if (tx.deposit || tx.txType === "Deposit") {
+        depositSize++;
+      } else if (tx.withdraw || tx.txType === "Withdraw") {
+        withdrawSize++;
+      } else if (tx.accountUpdate || tx.txType === "AccountUpdate") {
+        accountUpdateSize++;
+      }
+    }
+    bs.addNumber(depositSize, 2);
+    bs.addNumber(accountUpdateSize, 2);
+    bs.addNumber(withdrawSize, 2);
     const allDa = new Bitstream();
     for (const tx of block.transactions) {
       //console.log(tx);
       const da = new Bitstream();
       if (tx.noop || tx.txType === "Noop") {
-        da.addNumber(TransactionType.NOOP, 1);
+        // type need 3bit, pad 1bit
+        // 000 0
+        // 001 0 = 1 * 2
+        // 010 0 = 2 * 2
+        const typeNum = TransactionType.NOOP * 2;
+        da.addNumberWithChar(typeNum, 1);
       } else if (tx.spotTrade || tx.txType === "SpotTrade") {
         const spotTrade = tx.spotTrade ? tx.spotTrade : tx;
         const orderA = spotTrade.orderA;
         const orderB = spotTrade.orderB;
 
-        da.addNumber(TransactionType.SPOT_TRADE, 1);
-        da.addNumber(orderA.storageID, 4);
-        da.addNumber(orderB.storageID, 4);
+        // type need 3bit, pad 1bit
+        // 000 0
+        // 001 0 = 1 * 2
+        // 010 0 = 2 * 2
+        const typeNum = TransactionType.SPOT_TRADE * 2;
+        da.addNumberWithChar(typeNum, 1);
         da.addNumber(orderA.accountID, 4);
         da.addNumber(orderB.accountID, 4);
-        da.addNumber(orderA.tokenIdS ? orderA.tokenIdS : orderA.tokenS, 2);
-        da.addNumber(orderB.tokenIdS ? orderB.tokenIdS : orderB.tokenS, 2);
-        da.addNumber(spotTrade.fFillS_A ? spotTrade.fFillS_A : 0, 3);
-        da.addNumber(spotTrade.fFillS_B ? spotTrade.fFillS_B : 0, 3);
+        da.addNumber(orderA.tokenIdS ? orderA.tokenIdS : orderA.tokenS, 4);
+        da.addNumber(orderB.tokenIdS ? orderB.tokenIdS : orderB.tokenS, 4);
+        da.addNumber(spotTrade.fFillS_A ? spotTrade.fFillS_A : 0, 4);
+        da.addNumber(spotTrade.fFillS_B ? spotTrade.fFillS_B : 0, 4);
 
+        da.addNumber(orderA.feeTokenID, 4);
+        da.addNumber(toFloat(new BN(orderA.fee), Constants.Float16Encoding), 2);
+
+        da.addNumber(orderB.feeTokenID, 4);
+        da.addNumber(toFloat(new BN(orderB.fee), Constants.Float16Encoding), 2);
+
+        // 10000000 = 128
         let limitMask = orderA.fillAmountBorS ? 0b10000000 : 0;
-        let feeData =
-          orderA.feeBips >= 64
-            ? 64 + orderA.feeBips / Constants.FEE_MULTIPLIER
-            : orderA.feeBips;
+        let feeData = orderA.feeBips >= 64 ? 64 + orderA.feeBips / Constants.FEE_MULTIPLIER : orderA.feeBips;
         da.addNumber(limitMask + feeData, 1);
 
         limitMask = orderB.fillAmountBorS ? 0b10000000 : 0;
-        feeData =
-          orderB.feeBips >= 64
-            ? 64 + orderB.feeBips / Constants.FEE_MULTIPLIER
-            : orderB.feeBips;
+        // If feepips is greater than 64, it is marked as 1 in the second bit and feepips / 50 in the last 6 bits
+        feeData = orderB.feeBips >= 64 ? 64 + orderB.feeBips / Constants.FEE_MULTIPLIER : orderB.feeBips;
         da.addNumber(limitMask + feeData, 1);
+      } else if (tx.batchSpotTrade || tx.txType === "BatchSpotTrade") {
+        console.log("in getBlockData BatchSpotTrade");
+        var batchSpotTrade = tx.batchSpotTrade ? tx.batchSpotTrade : tx;
+        // bind tokenID and type use 1byte, type use 3bit, bindTokenID use 5 bits
+        // 000 00000
+        // 001 00000 = 1 * 32
+        // 010 00000 = 2 * 32
+        // 011 00000 = 3 * 32
+        const typeNum = TransactionType.BATCH_SPOT_TRADE * 32;
+        console.log("typeNum:" + typeNum + ";batchSpotTrade.bindTokenID:" + batchSpotTrade.bindTokenID);
+        var dataBitEx = new BitstreamEx();
+        dataBitEx.addNumberForBits(typeNum + batchSpotTrade.bindTokenID, 8);
+
+        this.feedBatchSpotTradePublicData(dataBitEx, batchSpotTrade, batchSpotTrade.bindTokenID);
+        dataBitEx.print();
+        console.log("BatchSpotTrade Public Data:" + dataBitEx.toHex(Constants.TX_DATA_AVAILABILITY_SIZE));
+
+        da.addHex(dataBitEx.toHex(Constants.TX_DATA_AVAILABILITY_SIZE));
+        console.log("BatchSpotTrade Public Data:" + da.getData());
       } else if (tx.transfer || tx.txType === "Transfer") {
         const transfer = tx.transfer ? tx.transfer : tx;
-        da.addNumber(TransactionType.TRANSFER, 1);
+        // 000 0
+        // 001 0 = 1 * 2
+        // 010 0 = 2 * 2
+        const typeNum = TransactionType.TRANSFER * 2;
+        da.addNumberWithChar(typeNum, 1);
         da.addNumber(transfer.type, 1);
         da.addNumber(transfer.fromAccountID, 4);
         da.addNumber(transfer.toAccountID, 4);
-        da.addNumber(transfer.tokenID, 2);
-        da.addNumber(
-          toFloat(new BN(transfer.amount), Constants.Float24Encoding),
-          3
-        );
-        da.addNumber(transfer.feeTokenID, 2);
-        da.addNumber(
-          toFloat(new BN(transfer.fee), Constants.Float16Encoding),
-          2
-        );
+        da.addNumber(transfer.tokenID, 4);
+        da.addNumber(toFloat(new BN(transfer.amount), Constants.Float32Encoding), 4);
+        da.addNumber(transfer.feeTokenID, 4);
+        da.addNumber(toFloat(new BN(transfer.fee), Constants.Float16Encoding), 2);
         da.addNumber(transfer.storageID, 4);
-        const needsToAddress =
-          transfer.type > 0 ||
-          transfer.toNewAccount ||
-          transfer.putAddressesInDA;
+        const needsToAddress = transfer.type > 0 || transfer.toNewAccount || transfer.putAddressesInDA;
         da.addBN(new BN(needsToAddress ? transfer.to : "0"), 20);
         const needsFromAddress = transfer.type > 0 || transfer.putAddressesInDA;
         da.addBN(new BN(needsFromAddress ? transfer.from : "0"), 20);
+
       } else if (tx.withdraw || tx.txType === "Withdraw") {
         const withdraw = tx.withdraw ? tx.withdraw : tx;
-        da.addNumber(TransactionType.WITHDRAWAL, 1);
         da.addNumber(withdraw.type, 1);
         da.addBN(new BN(withdraw.owner), 20);
         da.addNumber(withdraw.accountID, 4);
-        da.addNumber(withdraw.tokenID, 2);
-        da.addBN(new BN(withdraw.amount), 12);
-        da.addNumber(withdraw.feeTokenID, 2);
-        da.addNumber(
-          toFloat(new BN(withdraw.fee), Constants.Float16Encoding),
-          2
-        );
+        da.addNumber(withdraw.tokenID, 4);
+        da.addNumber(withdraw.feeTokenID, 4);
+        da.addNumber(toFloat(new BN(withdraw.fee), Constants.Float16Encoding), 2);
         da.addNumber(withdraw.storageID, 4);
         da.addBN(new BN(withdraw.onchainDataHash), 20);
       } else if (tx.deposit || tx.txType === "Deposit") {
         const deposit = tx.deposit ? tx.deposit : tx;
-        da.addNumber(TransactionType.DEPOSIT, 1);
+        da.addNumber(deposit.type, 1);
         da.addBN(new BN(deposit.owner), 20);
         da.addNumber(deposit.accountID, 4);
-        da.addNumber(deposit.tokenID, 2);
-        da.addBN(new BN(deposit.amount), 12);
+        da.addNumber(deposit.tokenID, 4);
+        da.addBN(new BN(deposit.amount), 31);
       } else if (tx.accountUpdate || tx.txType === "AccountUpdate") {
         const update = tx.accountUpdate ? tx.accountUpdate : tx;
-        da.addNumber(TransactionType.ACCOUNT_UPDATE, 1);
+
+        console.log("getBlockData::accountUpdate:", update);
+        let pub = new BN(EdDSA.pack(update.publicKeyX, update.publicKeyY), 16);
+        console.log("getBlockData::accountUpdate pub:", pub.toString(10));
+
         da.addNumber(update.type, 1);
         da.addBN(new BN(update.owner), 20);
-        da.addNumber(update.accountID, 4);
-        da.addNumber(update.feeTokenID, 2);
+        if (update.nonce == 0) {
+          da.addNumber(0, 4);
+        } else {
+          da.addNumber(update.accountID, 4);
+        }
+        da.addNumber(update.feeTokenID, 4);
         da.addNumber(toFloat(new BN(update.fee), Constants.Float16Encoding), 2);
-        da.addBN(
-          new BN(EdDSA.pack(update.publicKeyX, update.publicKeyY), 16),
-          32
-        );
+        da.addBN(new BN(EdDSA.pack(update.publicKeyX, update.publicKeyY), 16), 32);
         da.addNumber(update.nonce, 4);
-      } else if (tx.ammUpdate || tx.txType === "AmmUpdate") {
-        const update = tx.ammUpdate ? tx.ammUpdate : tx;
-        da.addNumber(TransactionType.AMM_UPDATE, 1);
-        da.addBN(new BN(update.owner), 20);
         da.addNumber(update.accountID, 4);
-        da.addNumber(update.tokenID, 2);
-        da.addNumber(update.feeBips, 1);
-        da.addBN(new BN(update.tokenWeight), 12);
+      } else if (tx.orderCancel || tx.txType === "OrderCancel") {
+        const update = tx.orderCancel ? tx.orderCancel : tx;
+        // 000 0
+        // 001 0 = 1 * 2
+        // 010 0 = 2 * 2
+        const typeNum = TransactionType.ORDER_CANCEL * 2;
+        da.addNumberWithChar(typeNum, 1);
+        da.addNumber(update.accountID, 4);
+        da.addNumber(update.storageID, 4);
+        da.addNumber(update.feeTokenID, 4);
+        da.addNumber(toFloat(new BN(update.fee), Constants.Float16Encoding), 2);
+        console.log("getBlockData::orderCancel", update);
+      } else if (tx.appKeyUpdate || tx.txType === "AppKeyUpdate") {
+        const update = tx.appKeyUpdate ? tx.appKeyUpdate : tx;
+        // 000 0
+        // 001 0 = 1 * 2
+        // 010 0 = 2 * 2
+        const typeNum = TransactionType.APPKEY_UPDATE * 2;
+        da.addNumberWithChar(typeNum, 1);
+
+        console.log("getBlockData::appKeyUpdate:", update);
+
+        da.addNumber(update.accountID, 4);
+        da.addNumber(update.feeTokenID, 4);
+        da.addNumber(toFloat(new BN(update.fee), Constants.Float16Encoding), 2);
         da.addNumber(update.nonce, 4);
-        da.addBN(new BN(update.balance), 12);
-      } else if (
-        tx.signatureVerification ||
-        tx.txType === "SignatureVerification"
-      ) {
-        const verification = tx.signatureVerification
-          ? tx.signatureVerification
-          : tx;
-        da.addNumber(TransactionType.SIGNATURE_VERIFICATION, 1);
-        da.addBN(new BN(verification.owner), 20);
-        da.addNumber(verification.accountID, 4);
-        da.addBN(new BN(verification.data, 10), 32);
       }
-      // console.log("type: " + da.extractUint8(0));
-      // console.log("da.length(): " + da.length());
-      assert(
-        da.length() <= Constants.TX_DATA_AVAILABILITY_SIZE,
-        "tx uses too much da"
-      );
-      while (da.length() < Constants.TX_DATA_AVAILABILITY_SIZE) {
-        da.addNumber(0, 1);
+      console.log("da.length(): " + da.length());
+      assert(da.bitLength() <= Constants.TX_DATA_AVAILABILITY_SIZE * 2, "tx uses too much da");
+      while (da.bitLength() < Constants.TX_DATA_AVAILABILITY_SIZE * 2) {
+        da.addNumberWithChar(0, 1);
       }
       allDa.addHex(da.getData());
     }
@@ -2650,8 +2765,9 @@ export class ExchangeTestUtil {
     // Transform DA
     const transformedDa = new Bitstream();
     const size = Constants.TX_DATA_AVAILABILITY_SIZE;
-    const size1 = 29;
-    const size2 = 39;
+    const size1 = Constants.TX_DATA_AVAILABILITY_SIZE_PART_1;
+
+    const size2 = Constants.TX_DATA_AVAILABILITY_SIZE_PART_2;
     assert.equal(size1 + size2, size, "invalid transform sizes");
     for (let i = 0; i < block.transactions.length; i++) {
       transformedDa.addHex(allDa.extractData(i * size, size1));
@@ -2673,8 +2789,7 @@ export class ExchangeTestUtil {
 
   public async registerTokens() {
     for (const token of this.testContext.allTokens) {
-      const tokenAddress =
-        token === null ? Constants.zeroAddress : token.address;
+      const tokenAddress = token === null ? Constants.zeroAddress : token.address;
       const symbol = this.testContext.tokenAddrSymbolMap.get(tokenAddress);
       // console.log(symbol + ": " + tokenAddress);
 
@@ -2706,6 +2821,10 @@ export class ExchangeTestUtil {
 
   public getAccountID(owner: string) {
     for (const account of this.accounts[this.exchangeId]) {
+      console.log("in getAccountID loop accountID:" + account.accountID)
+      console.log("in getAccountID loop pubX:" + account.publicKeyX)
+      console.log("in getAccountID loop pubY:" + account.publicKeyY)
+      console.log("in getAccountID loop owner:" + account.owner)
       if (account.owner === owner) {
         return account.accountID;
       }
@@ -2727,21 +2846,14 @@ export class ExchangeTestUtil {
   }
 
   public async createExchange(owner: string, options: ExchangeOptions = {}) {
-    const setupTestState =
-      options.setupTestState !== undefined ? options.setupTestState : true;
-    const deterministic =
-      options.deterministic !== undefined ? options.deterministic : false;
-    const useOwnerContract =
-      options.useOwnerContract !== undefined ? options.useOwnerContract : true;
+    const setupTestState = options.setupTestState !== undefined ? options.setupTestState : true;
+    const deterministic = options.deterministic !== undefined ? options.deterministic : false;
+    const useOwnerContract = options.useOwnerContract !== undefined ? options.useOwnerContract : true;
 
     this.deterministic = deterministic;
 
     const newExchange = await this.contracts.ExchangeV3.new();
-    await newExchange.initialize(
-      this.loopringV3.address,
-      owner,
-      this.emptyMerkleRoot
-    );
+    await newExchange.initialize(this.loopringV3.address, owner, this.emptyMerkleRoot, this.emptyMerkleAssetRoot);
 
     // const tx = await exchangePrototype.cloneExchange(
     //   owner,
@@ -2756,6 +2868,7 @@ export class ExchangeTestUtil {
     //   "ExchangeCloned"
     // );
     const exchangeAddress = newExchange.address;
+
     this.exchange = newExchange;
     const exchangeId = this.exchangeIdGenerator++;
 
@@ -2764,16 +2877,12 @@ export class ExchangeTestUtil {
     // Create a deposit contract impl
     const depositContractImpl = await this.contracts.DefaultDepositContract.new();
     // Create the proxy contract for the exchange using the implementation
-    const depositContractProxy = await this.contracts.OwnedUpgradabilityProxy.new(
-      { from: owner }
-    );
+    const depositContractProxy = await this.contracts.OwnedUpgradabilityProxy.new({ from: owner });
     await depositContractProxy.upgradeTo(depositContractImpl.address, {
       from: owner
     });
     // Wrap the proxy contract
-    this.depositContract = await this.contracts.DefaultDepositContract.at(
-      depositContractProxy.address
-    );
+    this.depositContract = await this.contracts.DefaultDepositContract.at(depositContractProxy.address);
     // Initialize the deposit contract
     await this.depositContract.initialize(this.exchange.address);
 
@@ -2783,23 +2892,16 @@ export class ExchangeTestUtil {
     });
     // Check the deposit contract
     const onchainDepositContract = await this.exchange.getDepositContract();
-    assert.equal(
-      onchainDepositContract,
-      this.depositContract.address,
-      "unexpected deposit contract"
-    );
+    assert.equal(onchainDepositContract, this.depositContract.address, "unexpected deposit contract");
 
     this.exchangeOwner = owner;
     this.exchangeOperator = owner;
     this.exchangeId = exchangeId;
     this.activeOperator = undefined;
 
-    const exchangeCreationTimestamp = (await this.exchange.getBlockInfo(0))
-      .timestamp;
-    this.GENESIS_MERKLE_ROOT = new BN(
-      (await this.exchange.getMerkleRoot()).slice(2),
-      16
-    );
+    const exchangeCreationTimestamp = (await this.exchange.getBlockInfo(0)).timestamp;
+    this.GENESIS_MERKLE_ROOT = new BN((await this.exchange.getMerkleRoot()).slice(2), 16);
+    this.GENESIS_MERKLE_ASSET_ROOT = new BN((await this.exchange.getMerkleAssetRoot()).slice(2), 16);
 
     const genesisBlock: Block = {
       blockIdx: 0,
@@ -2811,6 +2913,7 @@ export class ExchangeTestUtil {
       origin: Constants.zeroAddress,
       operatorId: 0,
       merkleRoot: "0x" + this.GENESIS_MERKLE_ROOT.toString(16, 64),
+      merkleAssetRoot: "0x" + this.GENESIS_MERKLE_ASSET_ROOT.toString(16, 64),
       data: "0x",
       auxiliaryData: [],
       offchainData: "0x",
@@ -2830,39 +2933,23 @@ export class ExchangeTestUtil {
 
     // Deposit some LRC to stake for the exchange
     const depositer = this.testContext.operators[2];
-    const stakeAmount = new BN(
-      web3.utils.toWei("" + (1 + this.getRandomInt(1000)))
-    );
-    await this.setBalanceAndApprove(
-      depositer,
-      "LRC",
-      stakeAmount,
-      this.loopringV3.address
-    );
+    const stakeAmount = new BN(web3.utils.toWei("" + (1 + this.getRandomInt(1000))));
+    await this.setBalanceAndApprove(depositer, "LRC", stakeAmount, this.loopringV3.address);
 
     // Stake it
-    await this.loopringV3.depositExchangeStake(
-      this.exchange.address,
-      stakeAmount,
-      {
-        from: depositer
-      }
-    );
+    await this.loopringV3.depositExchangeStake(this.exchange.address, stakeAmount, {
+      from: depositer
+    });
 
     // Set the owner
     if (useOwnerContract) {
-      const ownerContract = await LoopringIOExchangeOwner.new(
-        this.exchange.address,
-        { from: this.exchangeOwner }
-      );
+      const ownerContract = await LoopringIOExchangeOwner.new(this.exchange.address, { from: this.exchangeOwner });
       await this.setOperatorContract(ownerContract);
 
       await this.exchange.transferOwnership(ownerContract.address, {
         from: this.exchangeOwner
       });
-      const txData = this.exchange.contract.methods
-        .claimOwnership()
-        .encodeABI();
+      const txData = this.exchange.contract.methods.claimOwnership().encodeABI();
       await ownerContract.transact(txData, { from: this.exchangeOwner });
     }
 
@@ -2888,28 +2975,18 @@ export class ExchangeTestUtil {
     return tokenID;
   }
 
-  public async createMerkleTreeInclusionProof(
-    accountID: number,
-    token: string
-  ) {
+  public async createMerkleTreeInclusionProof(accountID: number, token: string) {
     const tokenID = this.getTokenIdFromNameOrAddress(token);
 
     await this.syncExplorer();
-    const explorerExchange = this.explorer.getExchangeByAddress(
-      this.exchange.address
-    );
+    const explorerExchange = this.explorer.getExchangeByAddress(this.exchange.address);
     explorerExchange.buildMerkleTreeForWithdrawalMode();
     return explorerExchange.getWithdrawFromMerkleTreeData(accountID, tokenID);
   }
 
-  public async withdrawFromMerkleTreeWithProof(
-    data: WithdrawFromMerkleTreeData
-  ) {
+  public async withdrawFromMerkleTreeWithProof(data: WithdrawFromMerkleTreeData) {
     const tx = await this.exchange.withdrawFromMerkleTree(data);
-    logInfo(
-      "\x1b[46m%s\x1b[0m",
-      "[WithdrawFromMerkleTree] Gas used: " + tx.receipt.gasUsed
-    );
+    logInfo("\x1b[46m%s\x1b[0m", "[WithdrawFromMerkleTree] Gas used: " + tx.receipt.gasUsed);
   }
 
   public async withdrawFromMerkleTree(accountID: number, token: string) {
@@ -2917,12 +2994,7 @@ export class ExchangeTestUtil {
     await this.withdrawFromMerkleTreeWithProof(proof);
   }
 
-  public async setBalanceAndApprove(
-    owner: string,
-    token: string,
-    amount: BN,
-    contractAddress?: string
-  ) {
+  public async setBalanceAndApprove(owner: string, token: string, amount: BN, contractAddress?: string) {
     if (contractAddress === undefined) {
       contractAddress = this.depositContract.address;
     }
@@ -2982,14 +3054,10 @@ export class ExchangeTestUtil {
   }
 
   public async advanceBlockTimestamp(seconds: number) {
-    const previousTimestamp = (
-      await web3.eth.getBlock(await web3.eth.getBlockNumber())
-    ).timestamp;
+    const previousTimestamp = (await web3.eth.getBlock(await web3.eth.getBlockNumber())).timestamp;
     await this.evmIncreaseTime(seconds);
     await this.evmMine();
-    const currentTimestamp = (
-      await web3.eth.getBlock(await web3.eth.getBlockNumber())
-    ).timestamp;
+    const currentTimestamp = (await web3.eth.getBlock(await web3.eth.getBlockNumber())).timestamp;
     assert(
       Math.abs(currentTimestamp - (previousTimestamp + seconds)) < 60,
       "Timestamp should have been increased by roughly the expected value"
@@ -3000,10 +3068,7 @@ export class ExchangeTestUtil {
     const accountID = this.getAccountID(owner);
     const tokenID = this.getTokenIdFromNameOrAddress(token);
     const latestBlockIdx = this.blocks[this.exchangeId].length - 1;
-    const state = await Simulator.loadExchangeState(
-      this.exchangeId,
-      latestBlockIdx
-    );
+    const state = await Simulator.loadExchangeState(this.exchangeId, latestBlockIdx);
     try {
       return state.accounts[accountID].balances[tokenID].balance;
     } catch {
@@ -3056,29 +3121,19 @@ export class ExchangeTestUtil {
     );
     assert(
       balance.eq(expectedBalance),
-      desc +
-        ". " +
-        balance.toString(10) +
-        " but expected " +
-        expectedBalance.toString(10)
+      desc + ". " + balance.toString(10) + " but expected " + expectedBalance.toString(10)
     );
   }
 
   public async randomizeWithdrawalFee() {
-    await this.loopringV3.updateSettings(
-      await this.loopringV3.protocolFeeVault(),
-      await this.loopringV3.blockVerifierAddress(),
-      this.getRandomFee(),
-      { from: this.testContext.deployer }
-    );
+    await this.loopringV3.updateSettings(await this.loopringV3.protocolFeeVault(), this.getRandomFee(), {
+      from: this.testContext.deployer
+    });
   }
 
   public async doRandomDeposit(ownerIndex?: number) {
     const orderOwners = this.testContext.orderOwners;
-    ownerIndex =
-      ownerIndex !== undefined
-        ? ownerIndex
-        : this.getRandomInt(orderOwners.length);
+    ownerIndex = ownerIndex !== undefined ? ownerIndex : this.getRandomInt(orderOwners.length);
     const owner = orderOwners[Number(ownerIndex)];
     const amount = this.getRandomAmount();
     const token = this.getTokenAddress("LRC");
@@ -3086,25 +3141,14 @@ export class ExchangeTestUtil {
   }
 
   public async doRandomOnchainWithdrawal(deposit: Deposit) {
-    return await this.requestWithdrawal(
-      deposit.owner,
-      deposit.token,
-      this.getRandomAmount(),
-      "ETH",
-      new BN(0),
-      { authMethod: AuthMethod.FORCE }
-    );
+    return await this.requestWithdrawal(deposit.owner, deposit.token, this.getRandomAmount(), "ETH", new BN(0), {
+      authMethod: AuthMethod.FORCE
+    });
   }
 
   public async doRandomOffchainWithdrawal(deposit: Deposit) {
     assert(false);
-    this.requestWithdrawal(
-      deposit.owner,
-      deposit.token,
-      this.getRandomAmount(),
-      "LRC",
-      new BN(0)
-    );
+    this.requestWithdrawal(deposit.owner, deposit.token, this.getRandomAmount(), "LRC", new BN(0));
   }
 
   public shuffle(a: any[]) {
@@ -3118,20 +3162,13 @@ export class ExchangeTestUtil {
   public async checkExplorerState() {
     // Get the current state
     const numBlocksOnchain = this.blocks[this.exchangeId].length;
-    const state = await Simulator.loadExchangeState(
-      this.exchangeId,
-      numBlocksOnchain - 1
-    );
+    const state = await Simulator.loadExchangeState(this.exchangeId, numBlocksOnchain - 1);
 
     await this.syncExplorer();
     const exchange = this.explorer.getExchangeByAddress(this.exchange.address);
 
     // Compare accounts
-    assert.equal(
-      exchange.getNumAccounts(),
-      state.accounts.length,
-      "number of accounts does not match"
-    );
+    assert.equal(exchange.getNumAccounts(), state.accounts.length, "number of accounts does not match");
     for (let accountID = 0; accountID < state.accounts.length; accountID++) {
       const accountA = state.accounts[accountID];
       const accountB = exchange.getAccount(accountID);
@@ -3139,41 +3176,17 @@ export class ExchangeTestUtil {
     }
 
     // Compare blocks
-    assert.equal(
-      exchange.getNumBlocks(),
-      this.blocks[this.exchangeId].length,
-      "number of blocks does not match"
-    );
+    assert.equal(exchange.getNumBlocks(), this.blocks[this.exchangeId].length, "number of blocks does not match");
     for (let blockIdx = 0; blockIdx < exchange.getNumBlocks(); blockIdx++) {
-      //console.log("Testing blockIdx: " + blockIdx);
+      console.log("Testing blockIdx: " + blockIdx);
       const explorerBlock = exchange.getBlock(blockIdx);
       const testBlock = this.blocks[this.exchangeId][blockIdx];
-      assert.equal(
-        explorerBlock.exchange,
-        this.exchange.address,
-        "unexpected exchangeId"
-      );
-      assert.equal(
-        explorerBlock.blockIdx,
-        testBlock.blockIdx,
-        "unexpected blockIdx"
-      );
-      assert.equal(
-        explorerBlock.blockType,
-        testBlock.blockType,
-        "unexpected blockType"
-      );
-      assert.equal(
-        explorerBlock.blockVersion,
-        testBlock.blockVersion,
-        "unexpected blockVersion"
-      );
+      assert.equal(explorerBlock.exchange, this.exchange.address, "unexpected exchangeId");
+      assert.equal(explorerBlock.blockIdx, testBlock.blockIdx, "unexpected blockIdx");
+      assert.equal(explorerBlock.blockType, testBlock.blockType, "unexpected blockType");
+      assert.equal(explorerBlock.blockVersion, testBlock.blockVersion, "unexpected blockVersion");
       assert.equal(explorerBlock.data, testBlock.data, "unexpected data");
-      assert.equal(
-        explorerBlock.offchainData,
-        testBlock.offchainData,
-        "unexpected offchainData"
-      );
+      assert.equal(explorerBlock.offchainData, testBlock.offchainData, "unexpected offchainData");
       /*assert.equal(
         explorerBlock.operator,
         testBlock.operator,
@@ -3184,16 +3197,8 @@ export class ExchangeTestUtil {
         explorerBlock.blockFee.eq(testBlock.blockFee),
         "unexpected blockFee"
       );*/
-      assert.equal(
-        explorerBlock.timestamp,
-        testBlock.timestamp,
-        "unexpected timestamp"
-      );
-      assert.equal(
-        explorerBlock.transactionHash,
-        testBlock.transactionHash,
-        "unexpected transactionHash"
-      );
+      assert.equal(explorerBlock.timestamp, testBlock.timestamp, "unexpected timestamp");
+      assert.equal(explorerBlock.transactionHash, testBlock.transactionHash, "unexpected transactionHash");
     }
 
     // Compare deposits
@@ -3316,21 +3321,12 @@ export class ExchangeTestUtil {
   }
 
   public getRandomFee() {
-    return this.deterministic
-      ? new BN(0)
-      : new BN(web3.utils.toWei("" + this.getRandomInt(10000) / 1000000));
+    return this.deterministic ? new BN(0) : new BN(web3.utils.toWei("" + this.getRandomInt(10000) / 1000000));
   }
 
   public async depositExchangeStakeChecked(amount: BN, owner: string) {
     const snapshot = new BalanceSnapshot(this);
-    await snapshot.transfer(
-      owner,
-      this.loopringV3.address,
-      "LRC",
-      amount,
-      "owner",
-      "loopringV3"
-    );
+    await snapshot.transfer(owner, this.loopringV3.address, "LRC", amount, "owner", "loopringV3");
 
     const stakeBefore = await this.exchange.getExchangeStake();
     const totalStakeBefore = await this.loopringV3.totalStake();
@@ -3344,38 +3340,18 @@ export class ExchangeTestUtil {
     const stakeAfter = await this.exchange.getExchangeStake();
     const totalStakeAfter = await this.loopringV3.totalStake();
 
-    assert(
-      stakeAfter.eq(stakeBefore.add(amount)),
-      "Stake should be increased by amount"
-    );
-    assert(
-      totalStakeAfter.eq(totalStakeBefore.add(amount)),
-      "Total stake should be increased by amount"
-    );
+    assert(stakeAfter.eq(stakeBefore.add(amount)), "Stake should be increased by amount");
+    assert(totalStakeAfter.eq(totalStakeBefore.add(amount)), "Total stake should be increased by amount");
 
     // Get the ExchangeStakeDeposited event
-    const event = await this.assertEventEmitted(
-      this.loopringV3,
-      "ExchangeStakeDeposited"
-    );
-    assert.equal(
-      event.exchangeAddr,
-      this.exchange.address,
-      "exchange should match"
-    );
+    const event = await this.assertEventEmitted(this.loopringV3, "ExchangeStakeDeposited");
+    assert.equal(event.exchangeAddr, this.exchange.address, "exchange should match");
     assert(event.amount.eq(amount), "amount should match");
   }
 
   public async withdrawExchangeStakeChecked(recipient: string, amount: BN) {
     const snapshot = new BalanceSnapshot(this);
-    await snapshot.transfer(
-      this.loopringV3.address,
-      recipient,
-      "LRC",
-      amount,
-      "loopringV3",
-      "recipient"
-    );
+    await snapshot.transfer(this.loopringV3.address, recipient, "LRC", amount, "loopringV3", "recipient");
 
     const stakeBefore = await this.exchange.getExchangeStake();
     const totalStakeBefore = await this.loopringV3.totalStake();
@@ -3389,42 +3365,20 @@ export class ExchangeTestUtil {
     const stakeAfter = await this.exchange.getExchangeStake();
     const totalStakeAfter = await this.loopringV3.totalStake();
 
-    assert(
-      stakeBefore.eq(stakeAfter.add(amount)),
-      "Stake should be decreased by amount"
-    );
-    assert(
-      totalStakeAfter.eq(totalStakeBefore.sub(amount)),
-      "Total stake should be decreased by amount"
-    );
+    assert(stakeBefore.eq(stakeAfter.add(amount)), "Stake should be decreased by amount");
+    assert(totalStakeAfter.eq(totalStakeBefore.sub(amount)), "Total stake should be decreased by amount");
 
     // Get the ExchangeStakeWithdrawn event
-    const event = await this.assertEventEmitted(
-      this.loopringV3,
-      "ExchangeStakeWithdrawn"
-    );
-    assert.equal(
-      event.exchangeAddr,
-      this.exchange.address,
-      "exchange should match"
-    );
+    const event = await this.assertEventEmitted(this.loopringV3, "ExchangeStakeWithdrawn");
+    assert.equal(event.exchangeAddr, this.exchange.address, "exchange should match");
     assert(event.amount.eq(amount), "amount should match");
   }
 
   public async depositProtocolFeeStakeChecked(amount: BN, owner: string) {
     const snapshot = new BalanceSnapshot(this);
-    await snapshot.transfer(
-      owner,
-      this.loopringV3.address,
-      "LRC",
-      amount,
-      "owner",
-      "loopringV3"
-    );
+    await snapshot.transfer(owner, this.loopringV3.address, "LRC", amount, "owner", "loopringV3");
 
-    const stakeBefore = await this.loopringV3.getProtocolFeeStake(
-      this.exchangeId
-    );
+    const stakeBefore = await this.loopringV3.getProtocolFeeStake(this.exchangeId);
     const totalStakeBefore = await this.loopringV3.totalStake();
 
     await this.loopringV3.depositProtocolFeeStake(this.exchangeId, amount, {
@@ -3433,47 +3387,23 @@ export class ExchangeTestUtil {
 
     await snapshot.verifyBalances();
 
-    const stakeAfter = await this.loopringV3.getProtocolFeeStake(
-      this.exchangeId
-    );
+    const stakeAfter = await this.loopringV3.getProtocolFeeStake(this.exchangeId);
     const totalStakeAfter = await this.loopringV3.totalStake();
 
-    assert(
-      stakeAfter.eq(stakeBefore.add(amount)),
-      "Stake should be increased by amount"
-    );
-    assert(
-      totalStakeAfter.eq(totalStakeBefore.add(amount)),
-      "Total stake should be increased by amount"
-    );
+    assert(stakeAfter.eq(stakeBefore.add(amount)), "Stake should be increased by amount");
+    assert(totalStakeAfter.eq(totalStakeBefore.add(amount)), "Total stake should be increased by amount");
 
     // Get the ProtocolFeeStakeDeposited event
-    const event = await this.assertEventEmitted(
-      this.loopringV3,
-      "ProtocolFeeStakeDeposited"
-    );
-    assert.equal(
-      event.exchangeId.toNumber(),
-      this.exchangeId,
-      "exchangeId should match"
-    );
+    const event = await this.assertEventEmitted(this.loopringV3, "ProtocolFeeStakeDeposited");
+    assert.equal(event.exchangeId.toNumber(), this.exchangeId, "exchangeId should match");
     assert(event.amount.eq(amount), "amount should match");
   }
 
   public async withdrawProtocolFeeStakeChecked(recipient: string, amount: BN) {
     const snapshot = new BalanceSnapshot(this);
-    await snapshot.transfer(
-      this.loopringV3.address,
-      recipient,
-      "LRC",
-      amount,
-      "loopringV3",
-      "recipient"
-    );
+    await snapshot.transfer(this.loopringV3.address, recipient, "LRC", amount, "loopringV3", "recipient");
 
-    const stakeBefore = await this.loopringV3.getProtocolFeeStake(
-      this.exchangeId
-    );
+    const stakeBefore = await this.loopringV3.getProtocolFeeStake(this.exchangeId);
     const totalStakeBefore = await this.loopringV3.totalStake();
 
     await this.exchange.withdrawProtocolFeeStake(recipient, amount, {
@@ -3482,42 +3412,21 @@ export class ExchangeTestUtil {
 
     await snapshot.verifyBalances();
 
-    const stakeAfter = await this.loopringV3.getProtocolFeeStake(
-      this.exchangeId
-    );
+    const stakeAfter = await this.loopringV3.getProtocolFeeStake(this.exchangeId);
     const totalStakeAfter = await this.loopringV3.totalStake();
 
-    assert(
-      stakeBefore.eq(stakeAfter.add(amount)),
-      "Stake should be decreased by amount"
-    );
-    assert(
-      totalStakeAfter.eq(totalStakeBefore.sub(amount)),
-      "Total stake should be decreased by amount"
-    );
+    assert(stakeBefore.eq(stakeAfter.add(amount)), "Stake should be decreased by amount");
+    assert(totalStakeAfter.eq(totalStakeBefore.sub(amount)), "Total stake should be decreased by amount");
 
     // Get the ProtocolFeeStakeWithdrawn event
-    const event = await this.assertEventEmitted(
-      this.loopringV3,
-      "ProtocolFeeStakeWithdrawn"
-    );
-    assert.equal(
-      event.exchangeId.toNumber(),
-      this.exchangeId,
-      "exchangeId should match"
-    );
+    const event = await this.assertEventEmitted(this.loopringV3, "ProtocolFeeStakeWithdrawn");
+    assert.equal(event.exchangeId.toNumber(), this.exchangeId, "exchangeId should match");
     assert(event.amount.eq(amount), "amount should match");
   }
 
   // private functions:
   private async createContractContext() {
-    const [
-      loopringV3,
-      exchange,
-      blockVerifier,
-      lrcToken,
-      wethToken
-    ] = await Promise.all([
+    const [loopringV3, exchange, blockVerifier, lrcToken, wethToken] = await Promise.all([
       this.contracts.LoopringV3.deployed(),
       this.contracts.ExchangeV3.deployed(),
       this.contracts.BlockVerifier.deployed(),
@@ -3525,12 +3434,10 @@ export class ExchangeTestUtil {
       this.contracts.WETHToken.deployed()
     ]);
 
-    const [userStakingPool, protocolFeeVaultContract] = await Promise.all([
-      this.contracts.UserStakingPool.deployed(),
+    const [protocolFeeVaultContract] = await Promise.all([
       this.contracts.ProtocolFeeVault.deployed()
     ]);
 
-    this.userStakingPool = userStakingPool;
     this.protocolFeeVaultContract = protocolFeeVaultContract;
 
     this.loopringV3 = loopringV3;
@@ -3541,8 +3448,7 @@ export class ExchangeTestUtil {
     this.wethAddress = wethToken.address;
 
     const currBlockNumber = await web3.eth.getBlockNumber();
-    const currBlockTimestamp = (await web3.eth.getBlock(currBlockNumber))
-      .timestamp;
+    const currBlockTimestamp = (await web3.eth.getBlock(currBlockNumber)).timestamp;
     return new Context(currBlockNumber, currBlockTimestamp, lrcToken.address);
   }
 
@@ -3552,17 +3458,7 @@ export class ExchangeTestUtil {
     const tokenAddrDecimalsMap = new Map<string, number>();
     const tokenAddrInstanceMap = new Map<string, any>();
 
-    const [
-      eth,
-      weth,
-      lrc,
-      gto,
-      rdn,
-      rep,
-      inda,
-      indb,
-      test
-    ] = await Promise.all([
+    const [eth, weth, lrc, gto, rdn, rep, inda, indb, test] = await Promise.all([
       null,
       this.contracts.WETHToken.deployed(),
       this.contracts.LRCToken.deployed(),
@@ -3650,73 +3546,11 @@ export class BalanceSnapshot {
   private balances: Map<string, BN>[] = [];
   private addressBook: Map<string, string>;
 
-  constructor(util: ExchangeTestUtil) {
-    this.exchangeTestUtil = util;
-    for (let i = 0; i < this.exchangeTestUtil.MAX_NUM_TOKENS; i++) {
-      this.balances[i] = new Map<string, BN>();
-    }
-    this.addressBook = new Map<string, string>();
-  }
+  constructor(util: ExchangeTestUtil) {}
 
-  public async watchBalance(owner: string, token: string, name?: string) {
-    const tokenID = await this.exchangeTestUtil.getTokenID(token);
-    const balance = await this.exchangeTestUtil.getOnchainBalance(owner, token);
-    if (!this.balances[tokenID].has(owner)) {
-      this.balances[tokenID].set(owner, balance);
-    }
-    if (name !== undefined) {
-      this.addressBook.set(owner, name);
-    }
-  }
+  public async watchBalance(owner: string, token: string, name?: string) {}
 
-  public async transfer(
-    from: string,
-    to: string,
-    token: string,
-    amount: BN,
-    fromName?: string,
-    toName?: string
-  ) {
-    const tokenID = await this.exchangeTestUtil.getTokenID(token);
-    if (!this.balances[tokenID].has(from)) {
-      await this.watchBalance(from, token, fromName);
-    }
-    if (!this.balances[tokenID].has(to)) {
-      await this.watchBalance(to, token, toName);
-    }
-    //const symbol = this.exchangeTestUtil.testContext.tokenAddrSymbolMap.get(this.exchangeTestUtil.getTokenAddress(token));
-    const balanceFrom = this.balances[tokenID].get(from);
-    const balanceTo = this.balances[tokenID].get(to);
-    //console.log(
-    //  amount.toString(10) + symbol + " from " +
-    //  this.addressBook.get(from) + " (" + balanceFrom.toString(10) + ") to " +
-    //  this.addressBook.get(to) + " (" + balanceTo.toString(10) + ").");
-    this.balances[tokenID].set(from, balanceFrom.sub(amount));
-    this.balances[tokenID].set(to, balanceTo.add(amount));
-  }
+  public async transfer(from: string, to: string, token: string, amount: BN, fromName?: string, toName?: string) {}
 
-  public async verifyBalances(allowedDelta: BN = new BN(0)) {
-    for (let i = 0; i < this.exchangeTestUtil.MAX_NUM_TOKENS; i++) {
-      for (const [owner, balance] of this.balances[i].entries()) {
-        const token = this.exchangeTestUtil.getTokenAddressFromID(i);
-        const symbol = this.exchangeTestUtil.testContext.tokenAddrSymbolMap.get(
-          this.exchangeTestUtil.getTokenAddress(token)
-        );
-        const currentBalance = await this.exchangeTestUtil.getOnchainBalance(
-          owner,
-          token
-        );
-        const ownerName = this.addressBook.get(owner);
-        let descr = symbol + " balance of " + ownerName + " does not match: ";
-        descr += currentBalance.toString(10) + " != " + balance.toString(10);
-        assert(
-          balance
-            .sub(currentBalance)
-            .abs()
-            .lte(allowedDelta),
-          descr
-        );
-      }
-    }
-  }
+  public async verifyBalances(allowedDelta: BN = new BN(0)) {}
 }

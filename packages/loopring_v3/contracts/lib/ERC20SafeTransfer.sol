@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 pragma solidity ^0.7.0;
 
 
@@ -8,6 +9,18 @@ pragma solidity ^0.7.0;
 /// @author Brecht Devos - <brecht@loopring.org>
 library ERC20SafeTransfer
 {
+    function isContract(address account) internal view returns (bool) {
+        // This method relies on extcodesize, which returns 0 for contracts in
+        // construction, since the code is only stored at the end of the
+        // constructor execution.
+
+        uint256 size;
+        assembly {
+            size := extcodesize(account)
+        }
+        return size > 0;
+    }
+
     function safeTransferAndVerify(
         address token,
         address to,
@@ -65,6 +78,8 @@ library ERC20SafeTransfer
         // A transfer is successful when 'call' is successful and depending on the token:
         // - No value is returned: we assume a revert when the transfer failed (i.e. 'call' returns false)
         // - A single boolean is returned: this boolean needs to be true (non-zero)
+
+        require(isContract(token), "ERC20SafeTransfer: call to non-contract");
 
         // bytes4(keccak256("transfer(address,uint256)")) = 0xa9059cbb
         bytes memory callData = abi.encodeWithSelector(
@@ -143,6 +158,8 @@ library ERC20SafeTransfer
         // A transferFrom is successful when 'call' is successful and depending on the token:
         // - No value is returned: we assume a revert when the transfer failed (i.e. 'call' returns false)
         // - A single boolean is returned: this boolean needs to be true (non-zero)
+
+        require(isContract(token), "ERC20SafeTransfer: call to non-contract");
 
         // bytes4(keccak256("transferFrom(address,address,uint256)")) = 0x23b872dd
         bytes memory callData = abi.encodeWithSelector(

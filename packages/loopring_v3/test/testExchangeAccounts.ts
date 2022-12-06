@@ -55,14 +55,6 @@ contract("Exchange", (accounts: string[]) => {
       // Submit
       await ctx.submitTransactions();
       await ctx.submitPendingBlocks();
-
-      // Try to create the account with EdDSA
-      await ctx.requestAccountUpdate(ownerB, token, fee, newKeyPair, {
-        authMethod: AuthMethod.EDDSA
-      });
-
-      // Submit
-      await expectThrow(ctx.submitTransactions(), "invalid block");
     });
 
     it("Should be able to update an account", async () => {
@@ -86,37 +78,13 @@ contract("Exchange", (accounts: string[]) => {
         { transferToNew: true }
       );
 
+      // Submit
+      await ctx.submitTransactions();
+
       // Update the key pair of the new account
       let newKeyPair = ctx.getKeyPairEDDSA();
       await ctx.requestAccountUpdate(ownerB, token, fee, newKeyPair, {
         authMethod: AuthMethod.ECDSA
-      });
-
-      // Update the key pair of the new account again to disable EdDSA signatures
-      await ctx.requestAccountUpdate(
-        ownerB,
-        token,
-        fee,
-        ctx.getZeroKeyPairEDDSA(),
-        { maxFee: fee.mul(new BN(3)) }
-      );
-
-      // Transfer some funds using an ECDSA signature
-      await ctx.transfer(
-        ownerB,
-        ownerA,
-        token,
-        fee.mul(new BN(10)),
-        token,
-        fee,
-        { authMethod: AuthMethod.ECDSA }
-      );
-
-      // Enable EdDSA signature again
-      newKeyPair = ctx.getKeyPairEDDSA();
-      await ctx.requestAccountUpdate(ownerB, token, fee, newKeyPair, {
-        authMethod: AuthMethod.ECDSA,
-        maxFee: fee.mul(new BN(3))
       });
 
       // Submit
@@ -133,46 +101,7 @@ contract("Exchange", (accounts: string[]) => {
       await expectThrow(ctx.submitPendingBlocks(), "TX_NOT_APPROVED");
     });
 
-    it("Should be able to verify an L2 signature", async () => {
-      await createExchange();
-
-      const token = ctx.getTokenAddress("LRC");
-      const fee = new BN(0);
-
-      // Create the account
-      let newKeyPair = ctx.getKeyPairEDDSA();
-      await ctx.requestAccountUpdate(ownerA, token, fee, newKeyPair, {
-        authMethod: AuthMethod.ECDSA
-      });
-
-      // Verify the data
-      await ctx.requestSignatureVerification(
-        ownerA,
-        ctx.hashToFieldElement(
-          "0xe58c1e35c9b00a5c962c98dfd135846e87d9813d6c9f3e92fb4ca6037fb3f021"
-        )
-      );
-
-      // Submit
-      await ctx.submitTransactions();
-      await ctx.submitPendingBlocks();
-
-      // Verify different data
-      await ctx.requestSignatureVerification(
-        ownerA,
-        ctx.hashToFieldElement(
-          "0xe58c1e35c9b00a5c962c98dfd135846e87d9813d6c9f3e92fb4ca6037fb3f021"
-        ),
-        {
-          dataToSign: ctx.hashToFieldElement(
-            "0xe58c1e35c9b00a5c962c98dfd135846e87d9813d6c9f3e92fb4ca6037fb4f021"
-          )
-        }
-      );
-      await expectThrow(ctx.submitTransactions(), "invalid block");
-    });
-
-    [AuthMethod.EDDSA, AuthMethod.ECDSA].forEach(function(authMethod) {
+    [AuthMethod.ECDSA].forEach(function(authMethod) {
       it(
         "Should not be able to update an account with fee > maxFee (" +
           authMethod +
@@ -195,15 +124,11 @@ contract("Exchange", (accounts: string[]) => {
           });
 
           // Commit the transfers
-          if (authMethod === AuthMethod.EDDSA) {
-            await expectThrow(ctx.submitTransactions(), "invalid block");
-          } else {
-            await ctx.submitTransactions();
-            await expectThrow(
-              ctx.submitPendingBlocks(),
-              "ACCOUNT_UPDATE_FEE_TOO_HIGH"
-            );
-          }
+          await ctx.submitTransactions();
+          await expectThrow(
+            ctx.submitPendingBlocks(),
+            "ACCOUNT_UPDATE_FEE_TOO_HIGH"
+          );
         }
       );
     });

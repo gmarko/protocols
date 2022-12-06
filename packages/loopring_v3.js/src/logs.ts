@@ -1,4 +1,4 @@
-import chalk = require('chalk');
+import chalk from "chalk";
 
 export function isInfoEnabled() {
   return process.argv.indexOf("-i") > -1 || isDebugEnabled();

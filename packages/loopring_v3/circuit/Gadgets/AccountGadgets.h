@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 #ifndef _ACCOUNTGADGETS_H_
 #define _ACCOUNTGADGETS_H_
 
@@ -23,9 +24,14 @@ struct AccountState
     VariableT owner;
     VariableT publicKeyX;
     VariableT publicKeyY;
+    VariableT appKeyPublicKeyX;
+    VariableT appKeyPublicKeyY;
     VariableT nonce;
-    VariableT feeBipsAMM;
+    VariableT disableAppKeySpotTrade;
+    VariableT disableAppKeyWithdraw;
+    VariableT disableAppKeyTransferToOther;
     VariableT balancesRoot;
+    VariableT storageRoot;
 };
 
 static void printAccount(const ProtoboardT &pb, const AccountState &state)
@@ -33,9 +39,15 @@ static void printAccount(const ProtoboardT &pb, const AccountState &state)
     std::cout << "- owner: " << pb.val(state.owner) << std::endl;
     std::cout << "- publicKeyX: " << pb.val(state.publicKeyX) << std::endl;
     std::cout << "- publicKeyY: " << pb.val(state.publicKeyY) << std::endl;
+    std::cout << "- appKeyPublicKeyX: " << pb.val(state.appKeyPublicKeyX) << std::endl;
+    std::cout << "- appKeyPublicKeyY: " << pb.val(state.appKeyPublicKeyY) << std::endl;
     std::cout << "- nonce: " << pb.val(state.nonce) << std::endl;
-    std::cout << "- feeBipsAMM: " << pb.val(state.feeBipsAMM) << std::endl;
+    std::cout << "- disableAppKeySpotTrade: " << pb.val(state.disableAppKeySpotTrade) << std::endl;
+    std::cout << "- disableAppKeyWithdraw: " << pb.val(state.disableAppKeyWithdraw) << std::endl;
+    std::cout << "- disableAppKeyTransferToOther: " << pb.val(state.disableAppKeyTransferToOther) << std::endl;
     std::cout << "- balancesRoot: " << pb.val(state.balancesRoot) << std::endl;
+    std::cout << "- storageRoot: " << pb.val(state.storageRoot) << std::endl;
+
 }
 
 class AccountGadget : public GadgetT
@@ -43,9 +55,13 @@ class AccountGadget : public GadgetT
   public:
     VariableT owner;
     const jubjub::VariablePointT publicKey;
+    const jubjub::VariablePointT appKeyPublicKey;
     VariableT nonce;
-    VariableT feeBipsAMM;
+    VariableT disableAppKeySpotTrade;
+    VariableT disableAppKeyWithdraw;
+    VariableT disableAppKeyTransferToOther;
     VariableT balancesRoot;
+    VariableT storageRoot;
 
     AccountGadget( //
       ProtoboardT &pb,
@@ -54,20 +70,34 @@ class AccountGadget : public GadgetT
 
           owner(make_variable(pb, FMT(prefix, ".owner"))),
           publicKey(pb, FMT(prefix, ".publicKey")),
+          appKeyPublicKey(pb, FMT(prefix, ".appKeyPublicKey")),
           nonce(make_variable(pb, FMT(prefix, ".nonce"))),
-          feeBipsAMM(make_variable(pb, FMT(prefix, ".feeBipsAMM"))),
-          balancesRoot(make_variable(pb, FMT(prefix, ".balancesRoot")))
+          disableAppKeySpotTrade(make_variable(pb, FMT(prefix, ".disableAppKeySpotTrade"))),
+          disableAppKeyWithdraw(make_variable(pb, FMT(prefix, ".disableAppKeyWithdraw"))),
+          disableAppKeyTransferToOther(make_variable(pb, FMT(prefix, ".disableAppKeyTransferToOther"))),
+          balancesRoot(make_variable(pb, FMT(prefix, ".balancesRoot"))),
+          storageRoot(make_variable(pb, FMT(prefix, ".storageRoot")))
+
     {
+        LOG(LogDebug, "in AccountGadget", "");
     }
 
     void generate_r1cs_witness(const AccountLeaf &account)
     {
+        LOG(LogDebug, "in AccountGadget", "generate_r1cs_witness");
         pb.val(owner) = account.owner;
         pb.val(publicKey.x) = account.publicKey.x;
         pb.val(publicKey.y) = account.publicKey.y;
+        pb.val(appKeyPublicKey.x) = account.appKeyPublicKey.x;
+        pb.val(appKeyPublicKey.y) = account.appKeyPublicKey.y;
         pb.val(nonce) = account.nonce;
-        pb.val(feeBipsAMM) = account.feeBipsAMM;
+
+        pb.val(disableAppKeySpotTrade) = account.disableAppKeySpotTrade;
+        pb.val(disableAppKeyWithdraw) = account.disableAppKeyWithdraw;
+        pb.val(disableAppKeyTransferToOther) = account.disableAppKeyTransferToOther;
         pb.val(balancesRoot) = account.balancesRoot;
+        pb.val(storageRoot) = account.storageRoot;
+
     }
 };
 
@@ -77,6 +107,9 @@ class UpdateAccountGadget : public GadgetT
     HashAccountLeaf leafBefore;
     HashAccountLeaf leafAfter;
 
+    HashAssetAccountLeaf assetLeafBefore;
+    HashAssetAccountLeaf assetLeafAfter;
+
     AccountState valuesBefore;
     AccountState valuesAfter;
 
@@ -84,9 +117,14 @@ class UpdateAccountGadget : public GadgetT
     MerklePathCheckT proofVerifierBefore;
     MerklePathT rootCalculatorAfter;
 
+    const VariableArrayT assetProof;
+    MerklePathCheckT assetProofVerifierBefore;
+    MerklePathT assetRootCalculatorAfter;
+
     UpdateAccountGadget(
       ProtoboardT &pb,
       const VariableT &merkleRoot,
+      const VariableT &merkleAssetRoot,
       const VariableArrayT &address,
       const AccountState &before,
       const AccountState &after,
@@ -102,9 +140,14 @@ class UpdateAccountGadget : public GadgetT
               {before.owner,
                before.publicKeyX,
                before.publicKeyY,
+               before.appKeyPublicKeyX,
+               before.appKeyPublicKeyY,
                before.nonce,
-               before.feeBipsAMM,
-               before.balancesRoot}),
+               before.disableAppKeySpotTrade,
+               before.disableAppKeyWithdraw,
+               before.disableAppKeyTransferToOther,
+               before.balancesRoot,
+               before.storageRoot}),
             FMT(prefix, ".leafBefore")),
           leafAfter(
             pb,
@@ -112,10 +155,35 @@ class UpdateAccountGadget : public GadgetT
               {after.owner, //
                after.publicKeyX,
                after.publicKeyY,
+               after.appKeyPublicKeyX,
+               after.appKeyPublicKeyY,
                after.nonce,
-               after.feeBipsAMM,
-               after.balancesRoot}),
+               after.disableAppKeySpotTrade,
+               after.disableAppKeyWithdraw,
+               after.disableAppKeyTransferToOther,
+               after.balancesRoot,
+               after.storageRoot}),
             FMT(prefix, ".leafAfter")),
+          
+          // asset tree
+          assetLeafBefore(
+            pb,
+            var_array(
+              {before.owner,
+               before.publicKeyX,
+               before.publicKeyY,
+               before.nonce,
+               before.balancesRoot}),
+            FMT(prefix, ".assetLeafBefore")),
+          assetLeafAfter(
+            pb,
+            var_array(
+              {after.owner,
+               after.publicKeyX,
+               after.publicKeyY,
+               after.nonce,
+               after.balancesRoot}),
+            FMT(prefix, ".assetLeafAfter")),
 
           proof(make_var_array(pb, TREE_DEPTH_ACCOUNTS * 3, FMT(prefix, ".proof"))),
           proofVerifierBefore(
@@ -132,8 +200,27 @@ class UpdateAccountGadget : public GadgetT
             address,
             leafAfter.result(),
             proof,
-            FMT(prefix, ".pathAfter"))
+            FMT(prefix, ".pathAfter")),
+          
+
+          assetProof(make_var_array(pb, TREE_DEPTH_ACCOUNTS * 3, FMT(prefix, ".assetProof"))),
+          assetProofVerifierBefore(
+            pb,
+            TREE_DEPTH_ACCOUNTS,
+            address,
+            assetLeafBefore.result(),
+            merkleAssetRoot,
+            assetProof,
+            FMT(prefix, ".assetProofVerifierBefore")),
+          assetRootCalculatorAfter( //
+            pb,
+            TREE_DEPTH_ACCOUNTS,
+            address,
+            assetLeafAfter.result(),
+            assetProof,
+            FMT(prefix, ".assetRootCalculatorAfter"))
     {
+        std::cout << "in UpdateAccountGadget" << std::endl;
     }
 
     void generate_r1cs_witness(const AccountUpdate &update)
@@ -141,19 +228,28 @@ class UpdateAccountGadget : public GadgetT
         leafBefore.generate_r1cs_witness();
         leafAfter.generate_r1cs_witness();
 
+        assetLeafBefore.generate_r1cs_witness();
+        assetLeafAfter.generate_r1cs_witness();
+
         proof.fill_with_field_elements(pb, update.proof.data);
         proofVerifierBefore.generate_r1cs_witness();
         rootCalculatorAfter.generate_r1cs_witness();
 
-        // ASSERT(pb.val(proofVerifierBefore.m_expected_root) == update.rootBefore,
-        // annotation_prefix);
+        assetProof.fill_with_field_elements(pb, update.assetProof.data);
+        assetProofVerifierBefore.generate_r1cs_witness();
+        assetRootCalculatorAfter.generate_r1cs_witness();
+        
         if (pb.val(rootCalculatorAfter.result()) != update.rootAfter)
         {
-            std::cout << "Before:" << std::endl;
             printAccount(pb, valuesBefore);
-            std::cout << "After:" << std::endl;
             printAccount(pb, valuesAfter);
             ASSERT(pb.val(rootCalculatorAfter.result()) == update.rootAfter, annotation_prefix);
+        }
+        if (pb.val(assetRootCalculatorAfter.result()) != update.assetRootAfter)
+        {
+            printAccount(pb, valuesBefore);
+            printAccount(pb, valuesAfter);
+            ASSERT(pb.val(assetRootCalculatorAfter.result()) == update.assetRootAfter, annotation_prefix);
         }
     }
 
@@ -162,53 +258,56 @@ class UpdateAccountGadget : public GadgetT
         leafBefore.generate_r1cs_constraints();
         leafAfter.generate_r1cs_constraints();
 
+        assetLeafBefore.generate_r1cs_constraints();
+        assetLeafAfter.generate_r1cs_constraints();
+
         proofVerifierBefore.generate_r1cs_constraints();
         rootCalculatorAfter.generate_r1cs_constraints();
+
+        assetProofVerifierBefore.generate_r1cs_constraints();
+        assetRootCalculatorAfter.generate_r1cs_constraints();
     }
 
     const VariableT &result() const
     {
         return rootCalculatorAfter.result();
     }
+
+    const VariableT &assetResult() const
+    {
+        return assetRootCalculatorAfter.result();
+    }
 };
 
 struct BalanceState
 {
     VariableT balance;
-    VariableT weightAMM;
-    VariableT storageRoot;
 };
 
 static void printBalance(const ProtoboardT &pb, const BalanceState &state)
 {
     std::cout << "- balance: " << pb.val(state.balance) << std::endl;
-    std::cout << "- weightAMM: " << pb.val(state.weightAMM) << std::endl;
-    std::cout << "- storageRoot: " << pb.val(state.storageRoot) << std::endl;
 }
 
 class BalanceGadget : public GadgetT
 {
   public:
     VariableT balance;
-    VariableT weightAMM;
-    VariableT storageRoot;
 
     BalanceGadget( //
       ProtoboardT &pb,
       const std::string &prefix)
         : GadgetT(pb, prefix),
 
-          balance(make_variable(pb, FMT(prefix, ".balance"))),
-          weightAMM(make_variable(pb, FMT(prefix, ".weightAMM"))),
-          storageRoot(make_variable(pb, FMT(prefix, ".storageRoot")))
+          balance(make_variable(pb, FMT(prefix, ".balance")))
     {
+        LOG(LogDebug, "in BalanceGadget", "");
     }
 
     void generate_r1cs_witness(const BalanceLeaf &balanceLeaf)
     {
+        LOG(LogDebug, "in BalanceGadget", "generate_r1cs_witness");
         pb.val(balance) = balanceLeaf.balance;
-        pb.val(weightAMM) = balanceLeaf.weightAMM;
-        pb.val(storageRoot) = balanceLeaf.storageRoot;
     }
 };
 
@@ -239,11 +338,11 @@ class UpdateBalanceGadget : public GadgetT
 
           leafBefore( //
             pb,
-            var_array({before.balance, before.weightAMM, before.storageRoot}),
+            var_array({before.balance}),
             FMT(prefix, ".leafBefore")),
           leafAfter( //
             pb,
-            var_array({after.balance, after.weightAMM, after.storageRoot}),
+            var_array({after.balance}),
             FMT(prefix, ".leafAfter")),
 
           proof(make_var_array(pb, TREE_DEPTH_TOKENS * 3, FMT(prefix, ".proof"))),
@@ -263,6 +362,7 @@ class UpdateBalanceGadget : public GadgetT
             proof,
             FMT(prefix, ".pathAfter"))
     {
+        LOG(LogDebug, "in UpdateBalanceGadget", "");
     }
 
     void generate_r1cs_witness(const BalanceUpdate &update)
@@ -273,14 +373,11 @@ class UpdateBalanceGadget : public GadgetT
         proof.fill_with_field_elements(pb, update.proof.data);
         proofVerifierBefore.generate_r1cs_witness();
         rootCalculatorAfter.generate_r1cs_witness();
-
-        // ASSERT(pb.val(proofVerifierBefore.m_expected_root) == update.rootBefore,
-        // annotation_prefix);
+ 
+        ASSERT(pb.val(proofVerifierBefore.m_expected_root) == update.rootBefore, annotation_prefix);
         if (pb.val(rootCalculatorAfter.result()) != update.rootAfter)
         {
-            std::cout << "Before:" << std::endl;
             printBalance(pb, valuesBefore);
-            std::cout << "After:" << std::endl;
             printBalance(pb, valuesAfter);
             ASSERT(pb.val(rootCalculatorAfter.result()) == update.rootAfter, annotation_prefix);
         }
@@ -300,8 +397,7 @@ class UpdateBalanceGadget : public GadgetT
         return rootCalculatorAfter.result();
     }
 };
-
-// Calculcates the state of a user's open position
+// Calculcate the state of a user's open position
 class DynamicBalanceGadget : public DynamicVariableGadget
 {
   public:

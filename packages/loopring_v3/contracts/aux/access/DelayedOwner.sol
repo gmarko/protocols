@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 pragma solidity ^0.7.0;
 
 import "../../lib/Claimable.sol";
@@ -12,12 +13,19 @@ contract DelayedOwner is DelayedTransaction, Claimable
 {
     address public defaultContract;
 
+    event FunctionDelayUpdate(
+        bytes4  functionSelector,
+        uint    delay
+    );
+
     constructor(
         address _defaultContract,
         uint    _timeToLive
         )
         DelayedTransaction(_timeToLive)
     {
+        require(_defaultContract != address(0), "INVALID_ADDRESS");
+
         defaultContract = _defaultContract;
     }
 
@@ -57,5 +65,7 @@ contract DelayedOwner is DelayedTransaction, Claimable
         internal
     {
         setFunctionDelay(defaultContract, functionSelector, delay);
+
+        emit FunctionDelayUpdate(functionSelector, delay);
     }
 }

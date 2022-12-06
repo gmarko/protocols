@@ -9,6 +9,30 @@ export enum AuthMethod {
   FORCE
 }
 
+export interface AutoMarketStartOrderInfo {
+  exchange?: string;
+  storageID?: number;
+  accountID?: number;
+  tokenIdS?: number;
+  tokenIdB?: number;
+  amountS: BN;
+  amountB: BN;
+  validUntil?: number;
+  fillAmountBorS?: boolean;
+  taker?: string;
+  feeTokenID?: number;
+  feeBips?: number;
+  tradingFee?: BN;
+  maxFee?: BN;
+  type?: number;
+  gridOffset?: BN;
+  orderOffset?: BN;
+  // max(<256)
+  maxLevel?: number;
+  useAppKey?: number;
+
+  signature?: Signature;
+}
 export interface OrderInfo {
   owner?: string;
   tokenS?: string;
@@ -24,13 +48,34 @@ export interface OrderInfo {
   tokenIdB?: number;
 
   validUntil?: number;
-  maxFeeBips?: number;
   fillAmountBorS?: boolean;
   taker?: string;
 
   feeBips?: number;
+  tradingFee?: BN;
 
-  amm?: boolean;
+  feeTokenID?: number;
+  fee?: BN;
+  maxFee?: BN;
+
+  // normal(<6), auto market buy(7), auto market sell(6)
+  type?: number;
+  level?: number;
+  startOrder?: AutoMarketStartOrderInfo;
+
+  gridOffset?: BN;
+  orderOffset?: BN;
+  // max(<256)
+  maxLevel?: number;
+
+  // used in BatchSpotTrade
+  deltaFilledS?: BN;
+  deltaFilledB?: BN;
+
+  useAppKey?: number;
+
+  isNextOrder?: boolean;
+  appointedStorageID?: number;
 
   balanceS?: BN;
   balanceB?: BN;
@@ -69,6 +114,85 @@ export interface SpotTrade {
   expected?: RingExpectation;
 }
 
+export interface BatchSpotTradeUser {
+  accountID?: number;
+  [key: string]: any;
+  orders: Array<OrderInfo>;
+}
+
+export interface BatchSpotTrade {
+  txType?: string;
+  users: Array<BatchSpotTradeUser>;
+  tokens: Array<number>;
+
+  tokenID?: number;
+  fee?: BN;
+
+  expected?: RingExpectation;
+
+  userAFirstTokenExchange?: number;
+  userASecondTokenExchange?: number;
+  userAThirdTokenExchange?: number;
+
+  userBFirstTokenExchange?: number;
+  userBSecondTokenExchange?: number;
+  userBThirdTokenExchange?: number;
+
+  userCFirstTokenExchange?: number;
+  userCSecondTokenExchange?: number;
+  userCThirdTokenExchange?: number;
+
+  userDFirstTokenExchange?: number;
+  userDSecondTokenExchange?: number;
+  userDThirdTokenExchange?: number;
+
+  userEFirstTokenExchange?: number;
+  userESecondTokenExchange?: number;
+  userEThirdTokenExchange?: number;
+
+  userFFirstTokenExchange?: number;
+  userFSecondTokenExchange?: number;
+  userFThirdTokenExchange?: number;
+
+  userAAccountID?: number;
+  userBAccountID?: number;
+  userCAccountID?: number;
+  userDAccountID?: number;
+  userEAccountID?: number;
+  userFAccountID?: number;
+
+  bindTokenID: number;
+
+  enableDataCheck?: boolean;
+  userAFirstEstimateExchange?: string;
+  userASecondEstimateExchange?: string;
+  userAThirdEstimateExchange?: string;
+
+  userBFirstEstimateExchange?: string;
+  userBSecondEstimateExchange?: string;
+  userBThirdEstimateExchange?: string;
+
+  userCFirstEstimateExchange?: string;
+  userCSecondEstimateExchange?: string;
+  userCThirdEstimateExchange?: string;
+
+  userDFirstEstimateExchange?: string;
+  userDSecondEstimateExchange?: string;
+  userDThirdEstimateExchange?: string;
+
+  userEFirstEstimateExchange?: string;
+  userESecondEstimateExchange?: string;
+  userEThirdEstimateExchange?: string;
+
+  userFFirstEstimateExchange?: string;
+  userFSecondEstimateExchange?: string;
+  userFThirdEstimateExchange?: string;
+
+  operatorFirstEstimateExchange?: string;
+  operatorSecondEstimateExchange?: string;
+  operatorThirdEstimateExchange?: string;
+}
+
 export interface Deposit {
   txType?: "Deposit";
   owner: string;
@@ -79,6 +203,7 @@ export interface Deposit {
   token: string;
   timestamp?: number;
   transactionHash?: string;
+  type?: number;
 }
 
 export interface AccountUpdate {
@@ -98,6 +223,29 @@ export interface AccountUpdate {
   fee: BN;
   maxFee: BN;
   originalMaxFee?: BN;
+
+  signature?: Signature;
+  onchainSignature?: any;
+}
+
+export interface AppKeyUpdate {
+  txType?: "AppKeyUpdate";
+  exchange: string;
+
+  accountID: number;
+  nonce: number;
+  validUntil: number;
+
+  appKeyPublicKeyX: string;
+  appKeyPublicKeyY: string;
+  feeTokenID: number;
+  fee: BN;
+  maxFee: BN;
+  originalMaxFee?: BN;
+
+  disableAppKeySpotTrade: number;
+  disableAppKeyWithdraw: number;
+  disableAppKeyTransferToOther: number;
 
   signature?: Signature;
   onchainSignature?: any;
@@ -136,6 +284,8 @@ export class Transfer {
 
   dualSecretKey?: string;
 
+  useAppKey?: number;
+
   signature?: Signature;
   dualSignature?: Signature;
 
@@ -166,11 +316,12 @@ export interface WithdrawalRequest {
   gas?: number;
 
   to?: string;
-  extraData?: string;
 
   onchainDataHash?: string;
 
   withdrawalFee?: BN;
+
+  useAppKey?: number;
 
   signature?: Signature;
   onchainSignature?: any;
@@ -179,41 +330,49 @@ export interface WithdrawalRequest {
   transactionHash?: string;
 }
 
-export interface AmmUpdate {
-  txType?: "AmmUpdate";
+export interface OrderCancel {
+  txType?: "OrderCancel";
   exchange: string;
 
-  owner: string;
   accountID: number;
-  tokenID: number;
+  storageID: number;
+  fee: BN;
+  maxFee: BN;
+  feeTokenID: number;
+  useAppKey: number;
 
-  feeBips: number;
-  tokenWeight: BN;
-
-  validUntil: number;
-  nonce: number;
-
-  onchainSignature?: any;
+  hash?: string;
+  signature?: Signature;
 }
 
-export interface SignatureVerification {
-  txType?: "SignatureVerification";
+export interface AutoMarketUpdate {
+  txType?: "AutoMarketUpdate";
   exchange: string;
 
-  owner: string;
   accountID: number;
-  data: string;
+  autoMarketID: string;
+  tokenSID: number;
+  tokenBID: number;
+  maxLevel: number;
+  gridOffset: BN;
+  orderOffset: BN;
+  cancelled: number;
+  validUntil: number;
 
+  fee: BN;
+  maxFee: BN;
+  feeTokenID: number;
+
+  hash?: string;
   signature?: Signature;
 }
 
 // Blocks
-
 export interface TxBlock {
   transactions: any[];
-  ammTransactions: any[];
-  protocolTakerFeeBips?: number;
-  protocolMakerFeeBips?: number;
+  protocolFeeBips?: number;
+  referFeeBips?: number;
+  uiFeeBips?: number;
 
   timestamp?: number;
   exchange?: string;
@@ -247,6 +406,7 @@ export interface Block {
   origin: string;
   operatorId: number;
   merkleRoot: string;
+  merkleAssetRoot: string;
   data: string;
   auxiliaryData: any[];
   offchainData: string;
@@ -267,6 +427,10 @@ export interface Account {
   owner: string;
   publicKeyX: string;
   publicKeyY: string;
+  appKeyPublicKeyX: string;
+  appKeyPublicKeyY: string;
   secretKey: string;
+  appKeySecretKey: string;
   nonce: number;
+  referID?: number;
 }

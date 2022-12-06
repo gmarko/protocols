@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 #ifndef _SIGNATUREGADGETS_H_
 #define _SIGNATUREGADGETS_H_
 
@@ -382,6 +383,49 @@ class SignatureVerifier : public GadgetT
     const VariableT &result() const
     {
         return signatureVerifier.result();
+    }
+};
+
+class BatchSignatureVerifier : public GadgetT 
+{
+  public:
+    std::vector<SignatureVerifier> signatureVerifierArray;
+    BatchSignatureVerifier(
+      ProtoboardT &pb,
+      const jubjub::Params &params,
+      const Constants &constants,
+      const VariableArrayT &publicXArray,
+      const VariableArrayT &publicYArray,
+      const VariableArrayT &messageArray,
+      const VariableArrayT &requiredArray,
+      const std::string &prefix)
+        : GadgetT(pb, prefix)
+    {
+      ASSERT(messageArray.size() == requiredArray.size(), FMT(prefix, ".ASSERT size not match"));
+      for (unsigned int i = 0; i < messageArray.size(); i++) 
+      {
+        signatureVerifierArray.emplace_back(
+          pb,
+          params,
+          constants,
+          jubjub::VariablePointT(publicXArray[i], publicYArray[i]),
+          messageArray[i],
+          requiredArray[i],
+          FMT(prefix, ".signatureVerifierArray"));
+      }
+    }
+    void generate_r1cs_witness(const std::vector<Signature> &signatures) {
+      for (unsigned int i = 0; i < signatureVerifierArray.size(); i++) 
+      {
+        signatureVerifierArray[i].generate_r1cs_witness(signatures[i]);
+      }
+    }
+    void generate_r1cs_constraints() 
+    {
+      for (unsigned int i = 0; i < signatureVerifierArray.size(); i++) 
+      {
+        signatureVerifierArray[i].generate_r1cs_constraints();
+      }
     }
 };
 

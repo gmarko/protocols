@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 #ifndef _MERKLETREE_H_
 #define _MERKLETREE_H_
 
@@ -207,9 +208,12 @@ template <typename HashT> class merkle_path_authenticator_4 : public merkle_path
 
 // Same parameters for ease of implementation in EVM
 using HashMerkleTree = Poseidon_4;
-using HashAccountLeaf = Poseidon_6;
-using HashBalanceLeaf = Poseidon_4_<3>;
-using HashStorageLeaf = Poseidon_4_<2>;
+using HashAccountLeaf = Poseidon_11;
+using HashAssetAccountLeaf = Poseidon_5;
+using HashBalanceLeaf = Poseidon_4_<1>;
+using HashStorageLeaf = Poseidon_7;
+using HashAutoMarketLeaf = Poseidon_9;
+using HashAutoMarketStorageLeaf = Poseidon_4_<4>;
 
 using MerklePathCheckT = merkle_path_authenticator_4<HashMerkleTree>;
 using MerklePathT = merkle_path_compute_4<HashMerkleTree>;

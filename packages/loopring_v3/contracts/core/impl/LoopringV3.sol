@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 pragma solidity ^0.7.0;
 
 import "../../lib/AddressUtil.sol";
@@ -33,14 +34,16 @@ contract LoopringV3 is ILoopringV3, ReentrancyGuard
         require(address(0) != _lrcAddress, "ZERO_ADDRESS");
 
         lrcAddress = _lrcAddress;
+        blockVerifierAddress = _blockVerifierAddress;
 
-        updateSettingsInternal(_protocolFeeVault, _blockVerifierAddress, 0);
+        protocolFeeBips = ExchangeData.DEFAULT_PROTOCOL_FEE_BIPS;
+
+        updateSettingsInternal(_protocolFeeVault, 0);
     }
 
     // == Public Functions ==
     function updateSettings(
         address payable _protocolFeeVault,
-        address _blockVerifierAddress,
         uint    _forcedWithdrawalFee
         )
         external
@@ -50,22 +53,21 @@ contract LoopringV3 is ILoopringV3, ReentrancyGuard
     {
         updateSettingsInternal(
             _protocolFeeVault,
-            _blockVerifierAddress,
             _forcedWithdrawalFee
         );
     }
 
     function updateProtocolFeeSettings(
-        uint8 _protocolTakerFeeBips,
-        uint8 _protocolMakerFeeBips
+        uint8 _protocolFeeBips
         )
         external
         override
         nonReentrant
         onlyOwner
     {
-        protocolTakerFeeBips = _protocolTakerFeeBips;
-        protocolMakerFeeBips = _protocolMakerFeeBips;
+        require(_protocolFeeBips <= ExchangeData.MAX_PROTOCOL_FEE_BIPS, "INVALID_PROTOCOL_FEE_BIPS");
+
+        protocolFeeBips = _protocolFeeBips;
 
         emit SettingsUpdated(block.timestamp);
     }
@@ -73,7 +75,7 @@ contract LoopringV3 is ILoopringV3, ReentrancyGuard
     function getExchangeStake(
         address exchangeAddr
         )
-        public
+        external
         override
         view
         returns (uint)
@@ -89,6 +91,8 @@ contract LoopringV3 is ILoopringV3, ReentrancyGuard
         nonReentrant
         returns (uint burnedLRC)
     {
+        require(amount > 0, "ZERO_VALUE");
+
         burnedLRC = exchangeStake[msg.sender];
 
         if (amount < burnedLRC) {
@@ -131,6 +135,8 @@ contract LoopringV3 is ILoopringV3, ReentrancyGuard
         nonReentrant
         returns (uint amountLRC)
     {
+        require(requestedAmount > 0, "ZERO_VALUE");
+
         uint stake = exchangeStake[msg.sender];
         amountLRC = (stake > requestedAmount) ? requestedAmount : stake;
 
@@ -144,30 +150,27 @@ contract LoopringV3 is ILoopringV3, ReentrancyGuard
     }
 
     function getProtocolFeeValues()
-        public
+        external
         override
         view
         returns (
-            uint8 takerFeeBips,
-            uint8 makerFeeBips
+            uint8 feeBips
         )
     {
-        return (protocolTakerFeeBips, protocolMakerFeeBips);
+        return protocolFeeBips;
     }
 
     // == Internal Functions ==
     function updateSettingsInternal(
         address payable  _protocolFeeVault,
-        address _blockVerifierAddress,
         uint    _forcedWithdrawalFee
         )
         private
     {
         require(address(0) != _protocolFeeVault, "ZERO_ADDRESS");
-        require(address(0) != _blockVerifierAddress, "ZERO_ADDRESS");
+        require(_forcedWithdrawalFee <= ExchangeData.MAX_FORCED_WITHDRAWAL_FEE, "INVALID_FORCED_WITHDRAWAL_FEE");
 
         protocolFeeVault = _protocolFeeVault;
-        blockVerifierAddress = _blockVerifierAddress;
         forcedWithdrawalFee = _forcedWithdrawalFee;
 
         emit SettingsUpdated(block.timestamp);

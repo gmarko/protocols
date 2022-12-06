@@ -29,9 +29,12 @@ export class SpotTradeProcessor {
   public static process(
     state: ExchangeState,
     block: BlockContext,
-    data: Bitstream
+    dataIn: Bitstream
   ) {
-    let offset = 1;
+    let dataInString = dataIn.getData();
+    let data = new Bitstream(dataInString.slice(3));
+
+    let offset = 0;
 
     // Storage IDs
     const storageIdA = data.extractUint32(offset);
@@ -46,10 +49,10 @@ export class SpotTradeProcessor {
     offset += 4;
 
     // Tokens
-    const tokenA = data.extractUint16(offset);
-    offset += 2;
-    const tokenB = data.extractUint16(offset);
-    offset += 2;
+    const tokenA = data.extractUint32(offset);
+    offset += 4;
+    const tokenB = data.extractUint32(offset);
+    offset += 4;
 
     // Fills
     const fFillSA = data.extractUint24(offset);
@@ -79,12 +82,11 @@ export class SpotTradeProcessor {
     const fillAmountBorSB = limitMaskB > 0;
 
     // Decode the float values
-    const fillSA = fromFloat(fFillSA, Constants.Float24Encoding);
-    const fillSB = fromFloat(fFillSB, Constants.Float24Encoding);
+    const fillSA = fromFloat(fFillSA, Constants.Float32Encoding);
+    const fillSB = fromFloat(fFillSB, Constants.Float32Encoding);
 
     const s = this.calculateSettlementValues(
-      block.protocolFeeTakerBips,
-      block.protocolFeeMakerBips,
+      block.protocolFeeBips,
       fillSA,
       fillSB,
       feeBipsA,
@@ -100,7 +102,7 @@ export class SpotTradeProcessor {
         .balance.iadd(s.fillBA)
         .isub(s.feeA);
 
-      const tradeHistoryA = accountA.getBalance(tokenA).getStorage(storageIdA);
+      const tradeHistoryA = accountA.getStorage(storageIdA);
       if (tradeHistoryA.storageID !== storageIdA) {
         tradeHistoryA.data = new BN(0);
       }
@@ -116,7 +118,7 @@ export class SpotTradeProcessor {
         .balance.iadd(s.fillBB)
         .isub(s.feeB);
 
-      const tradeHistoryB = accountB.getBalance(tokenB).getStorage(storageIdB);
+      const tradeHistoryB = accountB.getStorage(storageIdB);
       if (tradeHistoryB.storageID !== storageIdB) {
         tradeHistoryB.data = new BN(0);
       }
@@ -167,8 +169,7 @@ export class SpotTradeProcessor {
   }
 
   private static calculateSettlementValues(
-    protocolFeeTakerBips: number,
-    protocolFeeMakerBips: number,
+    protocolFeeBips: number,
     fillSA: BN,
     fillSB: BN,
     feeBipsA: number,
@@ -178,13 +179,13 @@ export class SpotTradeProcessor {
     const fillBB = fillSA;
     const [feeA, protocolFeeA] = this.calculateFees(
       fillBA,
-      protocolFeeTakerBips,
+      protocolFeeBips,
       feeBipsA
     );
 
     const [feeB, protocolFeeB] = this.calculateFees(
       fillBB,
-      protocolFeeMakerBips,
+      protocolFeeBips,
       feeBipsB
     );
 

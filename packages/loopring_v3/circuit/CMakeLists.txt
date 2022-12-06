@@ -17,8 +17,23 @@ add_definitions(-DCURVE_${CURVE})
 
 set(circuit_src_folder "./")
 
+if("${ZKP_WORKER_MODE}")
+  add_definitions(-DZKP_WORKER_MODE=1)
+    set( PROJECT_LINK_LIBS
+        ethsnarks_jubjub
+        rdkafka
+        rdkafka++
+        # aws-cpp-sdk-core
+        # aws-cpp-sdk-s3
+    )
+else()
+    set( PROJECT_LINK_LIBS
+        ethsnarks_jubjub
+    )
+endif()
+
 add_executable(dex_circuit "${circuit_src_folder}/main.cpp")
-target_link_libraries(dex_circuit ethsnarks_jubjub)
+target_link_libraries(dex_circuit ${PROJECT_LINK_LIBS})
 if("${PERFORMANCE}")
   set_target_properties(dex_circuit PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
@@ -29,6 +44,14 @@ file(GLOB test_filenames
 
 add_executable(dex_circuit_tests ${test_filenames})
 target_link_libraries(dex_circuit_tests ethsnarks_jubjub)
+
+# # zkpproxy
+# add_executable(dex_proxy "${circuit_src_folder}/zkpproxy.cpp")
+# target_link_libraries(dex_proxy ${PROJECT_LINK_LIBS})
+# if("${PERFORMANCE}")
+#   set_target_properties(dex_proxy PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+# endif()
+
 
 if("${GPU_PROVE}")
   add_definitions(-DGPU_PROVE=1)

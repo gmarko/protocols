@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2017 Loopring Technology Limited.
+// Modified by DeGate DAO, 2022
 
 #include "ThirdParty/BigInt.hpp"
 #include "Utils/Data.h"
@@ -13,6 +14,11 @@
 #include <fstream>
 #include <chrono>
 #include <mutex>
+#include <cstdio>
+#include <iostream>
+#include <exception>
+#include <pthread.h>
+#include <unistd.h>
 
 #ifdef MULTICORE
 #include <omp.h>
@@ -23,8 +29,6 @@
 #if WITH_MEMORY_STATS
 #include <unistd.h>
 #include <ios>
-#include <iostream>
-#include <fstream>
 #include <string>
 
 #include <malloc.h>
@@ -97,7 +101,8 @@ enum class Mode
     ExportCircuit,
     ExportWitness,
     Server,
-    Benchmark
+    Benchmark,
+	Test
 };
 
 namespace libsnark
@@ -333,6 +338,9 @@ bool validateCircuit(Loopring::Circuit *circuit)
     std::cout << "Validating block..." << std::endl;
     auto begin = now();
     // Check if the inputs are valid for the circuit
+    #ifndef NDEBUG
+        circuit->printInfo();
+    #endif
     if (!circuit->getPb().is_satisfied())
     {
         std::cerr << "Block is not valid!" << std::endl;
@@ -357,6 +365,7 @@ std::string getProvingKeyFilename(const std::string &baseFilename)
 }
 
 void runServer(
+  ProverContextT &context,
   Loopring::Circuit *circuit,
   const std::string &provingKeyFilename,
   const libsnark::Config &config,
@@ -391,14 +400,6 @@ void runServer(
         }
     };
 
-    // Setup the context a single time
-    ProverContextT context;
-    loadProvingKey(provingKeyFilename, context.provingKey);
-    context.constraint_system = &(circuit->getPb().constraint_system);
-    context.config = config;
-    context.domain = get_domain(circuit->getPb(), context.provingKey, config);
-    initProverContextBuffers(context);
-
     // Prover status info
     ProverStatus proverStatus;
     // Lock for the prover
@@ -407,73 +408,100 @@ void runServer(
     Server svr;
     // Called to prove blocks
     svr.Get("/prove", [&](const Request &req, Response &res) {
-        const std::lock_guard<std::mutex> lock(mtx);
+    		try
+    		{
+			const std::lock_guard<std::mutex> lock(mtx);
 
-        // Parse the parameters
-        std::string blockFilename = req.get_param_value("block_filename");
-        std::string proofFilename = req.get_param_value("proof_filename");
-        std::string strValidate = req.get_param_value("validate");
-        bool validate = (strValidate.compare("true") == 0) ? true : false;
-        if (blockFilename.length() == 0)
-        {
-            res.set_content("Error: block_filename missing!\n", "text/plain");
-            return;
-        }
+			// Parse the parameters
+			std::string blockFilename = req.get_param_value("block_filename");
+			std::string proofFilename = req.get_param_value("proof_filename");
+			std::string strValidate = req.get_param_value("validate");
+			bool validate = (strValidate.compare("true") == 0) ? true : false;
+			if (blockFilename.length() == 0)
+			{
+				res.set_content("Error: block_filename missing!\n", "text/plain");
+				return;
+			}
+			std::string strDelFile = req.get_param_value("delFile");
+			bool delFileAfterSuccess = (strDelFile.compare("true") == 0) ? true : false;
 
-        // Set the prover status for this session
-        ProverStatusRAII statusRAII(proverStatus, blockFilename, proofFilename);
+			// Set the prover status for this session
+			ProverStatusRAII statusRAII(proverStatus, blockFilename, proofFilename);
 
-        // Prove the block
-        json input = loadJSON(blockFilename);
-        if (input == json())
-        {
-            res.set_content("Error: Failed to load block!\n", "text/plain");
-            return;
-        }
+			// Prove the block
+			json input = loadJSON(blockFilename);
+			if (input == json())
+			{
+				res.set_content("Error: Failed to load block!\n", "text/plain");
+				return;
+			}
 
-        // Some checks to see if this block is compatible with the loaded circuit
-        int iBlockType = input["blockType"].get<int>();
-        unsigned int blockSize = input["blockSize"].get<int>();
-        if (/*iBlockType & circuit->getBlockType() != 1 || */ blockSize != circuit->getBlockSize())
-        {
-            res.set_content(
-              "Error: Incompatible block requested! Use /info to check "
-              "which blocks can be proven.\n",
-              "text/plain");
-            return;
-        }
+			// Check if this block is compatible with the loaded circuit
+			int iBlockType = input["blockType"].get<int>();
+			unsigned int blockSize = input["blockSize"].get<int>();
+			if (/*iBlockType & circuit->getBlockType() != 1 || */ blockSize != circuit->getBlockSize())
+			{
+				res.set_content(
+				  "Error: Incompatible block requested! Use /info to check "
+				  "which blocks can be proven.\n",
+				  "text/plain");
+				return;
+			}
 
-        if (!generateWitness(circuit, input))
-        {
-            res.set_content("Error: Failed to generate witness for block!\n", "text/plain");
-            return;
-        }
-        if (validate)
-        {
-            if (!validateCircuit(circuit))
-            {
-                res.set_content("Error: Block is invalid!\n", "text/plain");
-                return;
-            }
-        }
-        std::string jProof = proveCircuit(context, circuit);
-        if (jProof.length() == 0)
-        {
-            res.set_content("Error: Failed to prove block!\n", "text/plain");
-            return;
-        }
-        if (proofFilename.length() != 0)
-        {
-            if (!writeProof(jProof, proofFilename))
-            {
-                res.set_content("Error: Failed to write proof!\n", "text/plain");
-                return;
-            }
-        }
-        // Return the proof
-        res.set_content(jProof + "\n", "text/plain");
+			if (!generateWitness(circuit, input))
+			{
+				res.set_content("Error: Failed to generate witness for block!\n", "text/plain");
+				return;
+			}
+			if (validate)
+			{
+				if (!validateCircuit(circuit))
+				{
+					res.set_content("Error: Block is invalid!\n", "text/plain");
+					return;
+				}
+			}
+			std::string jProof = proveCircuit(context, circuit);
+			if (jProof.length() == 0)
+			{
+				res.set_content("Error: Failed to prove block!\n", "text/plain");
+				return;
+			}
+			if (proofFilename.length() != 0)
+			{
+				if (!writeProof(jProof, proofFilename))
+				{
+					res.set_content("Error: Failed to write proof!\n", "text/plain");
+					return;
+				}
+			}
+
+			// verify the proof.
+			VerificationKeyT vk = loadVerificationKey(provingKeyFilename.substr(0, provingKeyFilename.length() - 6) + "vk.json");
+            std::stringstream proof_stream;
+            proof_stream << jProof;
+            auto proof_pair = proof_from_json(proof_stream);
+
+            std::cout << "proof:" << jProof;
+            bool verified = libsnark::r1cs_gg_ppzksnark_zok_verifier_strong_IC<ppT>(vk, proof_pair.first, proof_pair.second);
+            std::cout << "verified:" << verified << std::endl;
+            json proofJson = json::parse(jProof);
+            proofJson["verified"] = verified;
+
+			// Return the proof
+			res.set_content(proofJson.dump() + "\n", "text/plain");
+			if(delFileAfterSuccess){
+					std::remove(blockFilename.c_str());
+			}
+    		}catch(std::exception& e)
+    		{
+    			std::string message = std::string("Prove error, exception:") + std::string(e.what());
+    			std::cout << message << std::endl;
+    			res.set_content(message, "text/plain");
+    			return;
+    		}
     });
-    // Retuns the status of the server
+    // Retun the status of the server
     svr.Get("/status", [&](const Request &req, Response &res) {
         if (proverStatus.proving)
         {
@@ -496,7 +524,7 @@ void runServer(
         const std::lock_guard<std::mutex> lock(mtx);
         svr.stop();
     });
-    // Default page contains help
+    // Help info
     svr.Get("/", [&](const Request &req, Response &res) {
         std::string content;
         content += "Prover server:\n";
@@ -511,12 +539,28 @@ void runServer(
     });
 
     std::cout << "Running server on 'localhost' on port " << port << std::endl;
-    svr.listen("127.0.0.1", port);
+    svr.listen("0.0.0.0", port);
+}
+
+std::string& replace_all(std::string& str,const std::string& old_value,const std::string& new_value)
+{
+	for(std::string::size_type   pos(0);   pos!=std::string::npos;   pos+=new_value.length())
+	{
+		if((pos=str.find(old_value,pos))!=std::string::npos)
+		{
+           str.replace(pos,old_value.length(),new_value);
+		}
+		else
+		{
+			break;
+		}
+    }
+    return str;
 }
 
 bool runBenchmark(Loopring::Circuit *circuit, const std::string &provingKeyFilename)
 {
-    // Load the proving key a single time
+    // Load the proving key
     ProverContextT context;
     loadProvingKey(provingKeyFilename, context.provingKey);
     context.constraint_system = &(circuit->getPb().constraint_system);
@@ -529,7 +573,7 @@ bool runBenchmark(Loopring::Circuit *circuit, const std::string &provingKeyFilen
         return false;
     }
 
-    // Get all configs to benchmark from the benchmark config
+    // Get all benchmark config
     BenchmarkConfig benchmarkConfig = loadJSON("benchmark.json").get<BenchmarkConfig>();
 
     // Create all configs
@@ -641,6 +685,7 @@ bool runBenchmark(Loopring::Circuit *circuit, const std::string &provingKeyFilen
 
 int main(int argc, char **argv)
 {
+    std::cout << "in main: " << std::endl;
     ethsnarks::ppT::init_public_params();
 
     // Load in the config
@@ -654,7 +699,7 @@ int main(int argc, char **argv)
     std::cout << "Num threads available: " << omp_get_max_threads() << std::endl;
     std::cout << "Num processors available: " << omp_get_num_procs() << std::endl;
 #endif
-
+    
     if (argc < 3)
     {
         std::cerr << "Usage: " << argv[0] << std::endl;
@@ -688,7 +733,13 @@ int main(int argc, char **argv)
 
     const char *proofFilename = NULL;
     Mode mode = Mode::Validate;
-    std::string baseFilename = "keys/";
+
+    #ifdef ZKP_WORKER_MODE
+        std::string baseFilename = "/data/keys/";
+    #else
+        std::string baseFilename = "keys/";
+    #endif
+
     if (strcmp(argv[1], "-validate") == 0)
     {
         mode = Mode::Validate;
@@ -817,6 +868,16 @@ int main(int argc, char **argv)
         mode = Mode::Benchmark;
         std::cout << "Benchmarking " << argv[2] << "..." << std::endl;
     }
+    else if (strcmp(argv[1], "-test") == 0)
+    {
+        if (argc != 3)
+        {
+            std::cout << "Invalid number of arguments!" << std::endl;
+            return 1;
+        }
+        mode = Mode::Test;
+        std::cout << "Test ..." << std::endl;
+    }
     else
     {
         std::cerr << "Unknown option: " << argv[1] << std::endl;
@@ -824,7 +885,9 @@ int main(int argc, char **argv)
     }
 
     // Read the block file
+    std::cout << "in main before loadJSON" << std::endl;
     json input = loadJSON(argv[2]);
+    std::cout << "in main after loadJSON" << std::endl;
     if (input == json())
     {
         return 1;
@@ -848,7 +911,7 @@ int main(int argc, char **argv)
     {
         if (!fileExists(provingKeyFilename))
         {
-            std::cerr << "Failed to find pk!" << std::endl;
+            std::cerr << "Failed to find pk!" << provingKeyFilename << std::endl;
             return 1;
         }
     }
@@ -893,7 +956,17 @@ int main(int argc, char **argv)
 
     if (mode == Mode::Server)
     {
-        runServer(circuit, provingKeyFilename, config, std::stoi(argv[3]));
+    	// Setup the context a single time
+    	ProverContextT context;
+    	loadProvingKey(provingKeyFilename, context.provingKey);
+    	context.constraint_system = &(circuit->getPb().constraint_system);
+    	context.config = config;
+    	context.domain = get_domain(circuit->getPb(), context.provingKey, config);
+    	initProverContextBuffers(context);
+
+//        pthread_t tid;
+
+        runServer(context, circuit, provingKeyFilename, config, std::stoi(argv[3]));
     }
 
     if (mode == Mode::Validate || mode == Mode::Prove)
@@ -946,6 +1019,15 @@ int main(int argc, char **argv)
         {
             return 1;
         }
+
+        VerificationKeyT vk = loadVerificationKey(provingKeyFilename.substr(0, provingKeyFilename.length() - 6) + "vk.json");
+        std::stringstream proof_stream;
+        proof_stream << jProof;
+        auto proof_pair = proof_from_json(proof_stream);
+
+        std::cout << "proof:" << jProof;
+        bool verified = libsnark::r1cs_gg_ppzksnark_zok_verifier_strong_IC<ppT>(vk, proof_pair.first, proof_pair.second);
+        std::cout << "verified:" << verified << std::endl;
 #endif
     }
 
@@ -967,5 +1049,6 @@ int main(int argc, char **argv)
         }
     }
 
+    pthread_exit(NULL);
     return 0;
 }
