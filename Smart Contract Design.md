@@ -39,11 +39,11 @@ This documentation briefly explains the design and implementation of DeGate smar
 
 DeGate smart contract receives zkBlock from the operator and validates the block using zk-SNARKs. It then modifies the contract state if the block is valid.
 
-Users interact with DeGate contracts through interfaces such as deposit, withdraw, and registerToken.
+Users interact with DeGate contracts through interfaces such as `deposit`, `withdraw`, and `registerToken`.
 
 ## zkBlock Validation
 
-The operator invokes the "submitBlocks" function through the Postman account, this function will validate blocks by the following rules:
+The operator invokes the `submitBlocks` function through the Postman account, this function will validate blocks by the following rules:
 
 ### Entire Merkle Tree And Asset Merkle Tree Validation
 
@@ -53,16 +53,16 @@ Another role of the Asset Merkle Tree is to guarantee trustlessness: When DeGate
 
 ### Timestamp Validation
 
-The header of zkBlock also embeds a timestamp as an input to the circuit, which is used by the smart contract to prevent an outdated block from being accepted. Operators deliver zkBlock attached with this timestamp to the smart contract, as the circuit is not able to verify the timestamp itself. The smart contract in DeGate will compare the timestamp in zkBlock with the timestamp on Layer 1 (also known as TimestampL1), thus ensuring the zkBlock is in an effective time range.
+The header of zkBlock also embeds a timestamp as an input to the circuit, which is used by the smart contract to prevent an outdated block from being accepted. Operators deliver zkBlock attached with this timestamp to the smart contract, as the circuit is not able to verify the timestamp itself. The smart contract in DeGate will compare the timestamp in zkBlock with the timestamp on Layer 1 (also known as `TimestampL1`), thus ensuring the zkBlock is in an effective time range.
 
-The timestamp range is defined as follows(TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS is configured as 7 days):
+The timestamp range is defined as follows(`TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS` is configured as 7 days):
 ```
 [TimestampL1 - TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS,TimestampL1 + TIMESTAMP_HALF_WINDOW_SIZE_IN_SECONDS ]
 ```
 
 ### Transactions Validation & Execution
 
-Specific types of transactions in zkBlock would be processed in the smart contract, like Deposit, Withdrawal, and AccountUpdate. These transactions are also referred to as conditional transactions.
+Specific types of transactions in zkBlock would be processed in the smart contract, like `Deposit`, `Withdrawal`, and `AccountUpdate`. These transactions are also referred to as conditional transactions.
 
 The validaty of conditional transactions is enforced by both zk-SNARKs and the smart contract. The smart contract will process these transactions in a specific order; If any transaction fails, the whole zkBlock reverts. Refer to subsequent sections for more detail on this process.
 
@@ -86,16 +86,16 @@ Users could deposit their funds by transferring to DeGate, or by invoking the re
 
 ### Standard Deposit
 
-For those whitelisted tokens, the user can deposit funds by transferring assets to DeGate. This is also referred to as "standard deposit". In this way, the user doesn't have to approve DeGate beforehand, compared with the smart contract way.
+For those whitelisted tokens, the user can deposit funds by transferring assets to DeGate. This is also referred to as `standard deposit`. In this way, the user doesn't have to approve DeGate beforehand, compared with the smart contract way.
 
-To verify such transfers, DeGate requires that the unconfirmed token balance is larger or equal to the balance deposited. For this fund, operator can deposit to any account, so users need to trust that operator will do the right thing. Anyone could view the unconfirmed balance by calling the "getUnconfirmedBalance" function.
+To verify such transfers, DeGate requires that the unconfirmed token balance is larger or equal to the balance deposited. For this fund, operator can deposit to any account, so users need to trust that operator will do the right thing. Anyone could view the unconfirmed balance by calling the `getUnconfirmedBalance` function.
 
 
 ### Advanced Deposit
 
-Users could also deposit any of their assets to the smart contract by invoking the "deposit" function, known as "advanced deposit". The user should grant DeGate authority to operate their funds first if the deposited token conforms to the ERC20 standard.
+Users could also deposit any of their assets to the smart contract by invoking the `deposit` function, known as `advanced deposit`. The user should grant DeGate authority to operate their funds first if the deposited token conforms to the ERC20 standard.
 
-The Operator should process these deposits within MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE(15 days), otherwise, users could withdraw their funds by invoking the "withdrawFromDepositRequest" function.
+The Operator should process these deposits within `MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE`(15 days), otherwise, users could withdraw their funds by invoking the `withdrawFromDepositRequest` function.
  
 ### User Deposit Process
 Users can initiate a deposit transaction on the chain. 
@@ -108,7 +108,7 @@ For deposit process and method comparison, please refer to DeGate product docume
 
 In normal cases, there is no fee charged for depositing. However, if there are more deposit transactions than the threshold within a specific time window, fees will be charged.
 
-The maximum number of transactions without fees can be seen from the "getFreeDepositRemained" function. By default, the threshold is set to 5000, with 2 transactions recovered for each block.
+The maximum number of transactions without fees can be seen from the `getFreeDepositRemained` function. By default, the threshold is set to 5000, with 2 transactions recovered for each block.
 
 For those deposits with fees charged, users should have a specific amount of ETH attached to their deposit transactions, 0.01ETH by default. The transaction will be declined without this value.
 
@@ -123,11 +123,11 @@ The user usually does not have to interact with the smart contract on Layer 1, i
 
 ### Force Withdrawal
 
-Users could also request the operator to return the fund by invoking the "forceWithdraw" interface. The operator must process the requests within MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE(15 days), otherwise, anyone could shift DeGate into Exodus Mode by invoking the "notifyForcedRequestTooOld" interface.
+Users could also request the operator to return the fund by invoking the `forceWithdraw` interface. The operator must process the requests within `MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE`(15 days), otherwise, anyone could shift DeGate into Exodus Mode by invoking the `notifyForcedRequestTooOld` interface.
 
 Force withdrawal requires the user to pay an extra fee that by default is 0.01 ETH and does not exceed 0.25 ETH. The user should also specify the recipient address, token address, and the correct accountID. Since the parameters can be provided by malicious users, and the smart contract does not have the necessary user info like user accounts and balances, the operator has to submit the parameters with the zk proof, and the smart contract will remove the invalid withdrawal requests.
 
-To prevent users from sending too many force withdrawal requests, DeGate does not allow more than MAX_OPEN_FORCED_REQUESTS(1000000, set in the smart contract) requests to be sent. The value is configured as 1000000 since DeGate takes into account both the operator capability and the lowest force withdrawal fees.
+To prevent users from sending too many force withdrawal requests, DeGate does not allow more than `MAX_OPEN_FORCED_REQUESTS`(1000000, set in the smart contract) requests to be sent. The value is configured as 1000000 since DeGate takes into account both the operator capability and the lowest force withdrawal fees.
 
 If there are too many force withdrawal transactions, the DeGate system will not be able to handle them and will be forced to enter the exodus mode. The setting of 1,000,000 requests is reasonable after evaluating the processing capability of DeGate.
 
@@ -135,7 +135,7 @@ Since malicious users consume too many transactions, resulting in ordinary users
 
 
 ### Exodus Mode
-DeGate will pause its services when it enters into Exodus Mode, where the operator cannot submit zk blocks. Users can only withdraw their assets based on the last block. To withdraw funds in Exodus Mode, you can invoke "withdrawFromMerkleTree" with a merkle proof from Asset Merkle Tree. Each call will return the remaining balance of the token to the user. 
+DeGate will pause its services when it enters into Exodus Mode, where the operator cannot submit zk blocks. Users can only withdraw their assets based on the last block. To withdraw funds in Exodus Mode, you can invoke `withdrawFromMerkleTree` with a merkle proof from Asset Merkle Tree. Each call will return the remaining balance of the token to the user. 
 
 ### User Withdrawal Process
 Users can initiate withdrawal requests off-chain anytime to retrieve assets from the DeGate smart contract. 
@@ -145,11 +145,11 @@ Users sign and initiate a withdrawal request. After the node verifies the signat
 For withdrawal process, please refer to DeGate product documentation for details https://docs.degate.com/v/product_en/main-features/withdrawal
 
 ## Token Registration
-A token should be registered on DeGate before being transacted. Anyone can call the "registerToken" function to register. The smart contract ensures that each token address can be registered only once; For ETH and DG, they will be registered on deployment.
+A token should be registered on DeGate before being transacted. Anyone can call the `registerToken` function to register. The smart contract ensures that each token address can be registered only once; For ETH and DG, they will be registered on deployment.
 
 A token can also be registered automatically by the smart contract on deposit if it was not registered before. 
 
-Each token address will be assigned to a token ID. IDs between 0 and 31, named "BindToken", are reserved by DeGate and can only be registered by the admin account in DeGate. BindTokens benefit from lower fees when used in aggregated transactions.
+Each token address will be assigned to a token ID. IDs between 0 and 31, named `BindToken`, are reserved by DeGate and can only be registered by the admin account in DeGate. BindTokens benefit from lower fees when used in aggregated transactions.
 
 ## Protocol Fees
 When using DeGate, users may need to pay different fees depending on the operation of different scenarios.
@@ -170,7 +170,7 @@ Contracts in DeGate  are made up of the following modules:
 
 ### zkBlock Data Definition
 
-The Operator uses the Postman account to submit zkBlock by invoking the "submitBlocks" interface.
+The Operator uses the Postman account to submit zkBlock by invoking the `submitBlocks` interface.
 
 ```
 function submitBlocks(Block[] zkBlocks)
@@ -293,21 +293,21 @@ PublicInputData of deposit transaction is defined as:
 * Amount: An uint248 value representing the amount of token value to deposit.
 
 
-The smart contract reconstructs the transaction by decoding the PublicInputdata and processes the depositing request according to the 'Type' field.
+The smart contract reconstructs the transaction by decoding the PublicInputdata and processes the depositing request according to the `Type` field.
 
 Standard Deposit:
 
 1. UnconfirmedBalance should be not less than the depositing amount in the deposit request.
 2. Since the smart contract has no way to know the original user who is depositing, DeGate only needs to confirm the amount is valid.
-3. Unconfirmed balance can be queried by the "getUnconfirmedBalance" interface.
+3. Unconfirmed balance can be queried by the `getUnconfirmedBalance` interface.
 
 
 Advanced Deposit:
 
-1. Make sure the pending request the "pendingDeposit" exists
+1. Make sure the pending request the `pendingDeposit` exists
 2. Make sure the amount in the pending deposit is larger or equal to that being deposited
 3. If the ending balance is not fully spent, then the pending deposit would be updated and saved; Otherwise, the pending deposit request is discarded.
-4. Balance of pending deposit can be queried by the "getPendingDepositAmount" interface.
+4. Balance of pending deposit can be queried by the `getPendingDepositAmount` interface.
 
 
 ### Account Update transaction
@@ -455,9 +455,9 @@ The contract process withdrawal requests in the following steps:
 
     - The contract verifies that "gasLimit" in AuxData is larger or equal to "minGas".
     - call withdraw function in the deposit contract, which will transfer funds to the user.
-    - Sometimes the withdrawal function of the deposit contract could fail to execute while the withdrawal transaction is successful. In this situation, the withdrawal request will be recorded to table the "amoutWithdrawable", and the transaction in submitBlocks will still be sent to Layer 1. Users can call the "withdrawFromApprovedWithdrawals" function to withdraw the fund from Layer 1 manually. 
+    - Sometimes the withdrawal function of the deposit contract could fail to execute while the withdrawal transaction is successful. In this situation, the withdrawal request will be recorded to table the "amoutWithdrawable", and the transaction in submitBlocks will still be sent to Layer 1. Users can call the `withdrawFromApprovedWithdrawals` function to withdraw the fund from Layer 1 manually. 
 
-The "withdrawFromApprovedWithdrawals" interface allows the user to withdraw funds manually as a backup strategy for withdrawal transaction failure.
+The `withdrawFromApprovedWithdrawals` interface allows the user to withdraw funds manually as a backup strategy for withdrawal transaction failure.
 
 ```
 function withdrawFromApprovedWithdrawals(address[] owners, address[] tokens)
@@ -478,12 +478,12 @@ The max trading fees are verified and updated at the time when the operator subm
 The "protocolFeeBips" field, included in BlockHeader of each submitted zkBlock, is the maximum trading fees allowed in spot trades. The circuit will constrain that all fees for spot trades do not exceed this value, and the contract will also check that the protocolFeeBips field included in BlockHeader is consistent with that configured in the contract, otherwise, the transaction is reverted.
 
 - Delayed Updating
-The fee rate in smart contracts can be modified with a delay of MIN_AGE_PROTOCOL_FEES_UNTIL_UPDATED(7 days). To update, the admin should call the "updateProtocolFeeSettings" function in the Loopring contract with a specified value passed to it. The modification will take effect after calling "validateAndSyncProtocolFees" function if there is a zkBlock to submit after the delay period expires.
+The fee rate in smart contracts can be modified with a delay of `MIN_AGE_PROTOCOL_FEES_UNTIL_UPDATED`(7 days). To update, the admin should call the `updateProtocolFeeSettings` function in the Loopring contract with a specified value passed to it. The modification will take effect after calling `validateAndSyncProtocolFees` function if there is a zkBlock to submit after the delay period expires.
 
 
 ### Function "submitBlocks"
 
-The Postman account in the operator invokes the "submitBlocks" function to submit a zkBlock to Layer 1.
+The Postman account in the operator invokes the `submitBlocks` function to submit a zkBlock to Layer 1.
 
 ```
 function submitBlocks(Block[] zkBlocks)
@@ -495,11 +495,11 @@ The contract processes this request in the following steps:
 2. Verify that the timestamp passed to the circuit is correct
 3. Process conditional transactions
 4. Verify and update max trading fee
-5. Verify the zero knowledge proof by calling the "verifyProofs" interface in the BlockVerifier contract
+5. Verify the zero knowledge proof by calling the `verifyProofs` interface in the BlockVerifier contract
 
 ### Function "deposit"
 
-The "deposit" function allows users to deposit their funds.
+The `deposit` function allows users to deposit their funds.
 
 ```
 function deposit(address from,address to,address tokenAddress,uint248 amount, bytes extraData)
@@ -507,14 +507,14 @@ function deposit(address from,address to,address tokenAddress,uint248 amount, by
 How it works:
 1. Verify that the token is registered and register the token if not.
 2. Check whether the fee is required. If so, some fee(depositFeeETH)  will be charged from msg.value, and the transaction is reverted if there is not enough eth to deduct in this case.
-3. Invoke the "deposit" function in the Deposit contract to transfer funds
+3. Invoke the `deposit` function in the Deposit contract to transfer funds
 4. Record the depositing request to the "pendingDeposits" table, and multiple depositing requests would be combined into one if they share the same token and user.
  
-The depositing operation will not take effect until the Deposit Transaction is submitted into the blockchain by DeGate. If the operator is not responding, then the user could withdraw the fund from the contract directly by calling the "withdrawFromDepositRequest" function.
+The depositing operation will not take effect until the Deposit Transaction is submitted into the blockchain by DeGate. If the operator is not responding, then the user could withdraw the fund from the contract directly by calling the `withdrawFromDepositRequest` function.
 
 ### Function "withdrawFromDepositRequest"
 
-The "withdrawFromDepositRequest" function is defined as follows:
+The `withdrawFromDepositRequest` function is defined as follows:
 
 ```
 function withdrawFromDepositRequest(address owner, address token)
@@ -524,13 +524,13 @@ How it works:
 
 1. Anyone can call it, with the user address as "owner" and token address as "token" as input arguments
 2. Check that there is a corresponding deposit request in the "pendingDeposits" table.
-3. Check that the deposit request is not processed for a configured time(MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE), or DeGate enters into Exodus Mode.
+3. Check that the deposit request is not processed for a configured time(`MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE`), or DeGate enters into Exodus Mode.
 4. Transfer the balance to the user according to the balance in the "pendingDeposits" table.
 5. Delete the depositing request in the "pendingDeposits" table.
 
 ### Function "forceWithdraw"
 
-The "forceWithdraw" function allows the user to force DeGate to return funds. 
+The `forceWithdraw` function allows the user to force DeGate to return funds. 
 
 
 ```
@@ -542,13 +542,13 @@ Notes:
 2. Check that the eth attached is sufficient to pay for the fee.
 3. Save the force withdrawal request to the "pendingForcedWithdrawals" table.
 
-The actual withdrawal would not finish until the withdrawal transaction built by DeGate is submitted. If the operator does not process the request for a configured time(MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE), then the user could trigger the exchange into Exodus Mode by calling "notifyForcedRequestTooOld".
+The actual withdrawal would not finish until the withdrawal transaction built by DeGate is submitted. If the operator does not process the request for a configured time(`MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE`), then the user could trigger the exchange into Exodus Mode by calling `notifyForcedRequestTooOld`.
 
 
 ### Exodus Mode
 #### Function "notifyForcedRequestTooOld"
 
-Function "notifyForcedRequestTooOld" is triggered by the user whose forced withdrawal request has not been processed for a long time, causing the exchange to change to Exodus Mode.
+Function `notifyForcedRequestTooOld` is triggered by the user whose forced withdrawal request has not been processed for a long time, causing the exchange to change to Exodus Mode.
 
 ```
 function notifyForcedRequestTooOld(uint32 accountID, address token)
@@ -556,15 +556,15 @@ function notifyForcedRequestTooOld(uint32 accountID, address token)
 How it works:
 
 1. Check that there exists a forced withdrawal request that matches (accountID and token).
-2. Check that the withdrawal request already expired on MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE (15 days).
+2. Check that the withdrawal request already expired on `MAX_AGE_FORCED_REQUEST_UNTIL_WITHDRAW_MODE` (15 days).
 3. Set the current timestamp as the start time of Exodus Mode.
-4. There is a function "isInWithdrawalMode" to check whether the exchange is in Exodus Mode((internally, checks withdrawalModeStartTime > 0)
+4. There is a function `isInWithdrawalMode` to check whether the exchange is in Exodus Mode((internally, checks withdrawalModeStartTime > 0)
 
 
 
 #### Function "withdrawFromMerkleTree"
 
-The function "withdrawFromMerkleTree" is used to withdraw funds in Exodus Mode.
+The function `withdrawFromMerkleTree` is used to withdraw funds in Exodus Mode.
 
 ```
 function withdrawFromMerkleTree(MerkleProof merkleProof)
@@ -619,7 +619,7 @@ function verifyAccountBalance(uint merkleRoot, MerkleProof merkleProof)
 5. Check that the accountsRoot rebuilt from merkle proof is equal to the root stored in the contract.
 
 ### Shutdown Mode
-At any time, the admin can shift the exchange to shutdown mode by invoking the "shutdown" function. In this mode, users can still withdraw their funds as per normal, and the operator can also submit blocks.
+At any time, the admin can shift the exchange to shutdown mode by invoking the `shutdown` function. In this mode, users can still withdraw their funds as per normal, and the operator can also submit blocks.
 
 The operator can return the user's fund on Layer 1 if the withdrawal operation has not been called by the user. In this mode, the operator only process withdrawal transaction, other types of the transaction will be ignored.
 
@@ -649,8 +649,8 @@ function deposit(address from, address token, uint248 amount)
 Notes:
 1. It can only be called by Exchange contract.
 2. If ETH is being deposited, the contract will check that msg.value >= amount and would refund the exceeding part.
-3. If ERC20 is being deposited, the contract will call "transferFrom" to move funds from the user to the Deposit contract, before which the user should authorize the Deposit contract first.
-4. If the user deposits by transfer rather than invoking the "deposit" function, the fund will be transferred to the Deposit contract directly.
+3. If ERC20 is being deposited, the contract will call `transferFrom` to move funds from the user to the Deposit contract, before which the user should authorize the Deposit contract first.
+4. If the user deposits by transfer rather than invoking the `deposit` function, the fund will be transferred to the Deposit contract directly.
 
 ### Function "withdraw"
 
@@ -691,7 +691,7 @@ function updateSettings (uint forcedWithdrawalFee)
 ```
 The function checks the argument by the following steps:
 
-1. it will check that the fee passed(forcedWithdrawalFee) does not exceed MAX_FORCED_WITHDRAWAL_FEE（0.25 eth）
+1. it will check that the fee passed(forcedWithdrawalFee) does not exceed `MAX_FORCED_WITHDRAWAL_FEE`（0.25 eth）
 
 ### Function "updateProtocolFeeSettings"
 
@@ -717,7 +717,7 @@ DeGate does not allow modification to these verifying keys once the contract is 
 
 ### Function "verifyProofs"
 
-function "verifyProofs" is used to verify zk proofs.
+function `verifyProofs` is used to verify zk proofs.
 
 ```
 function verifyProofs(uint8 blockType, uint16 blockSize, uint8 blockVersion, uint[] publicInputs, uint[] proofs)
@@ -730,7 +730,7 @@ function verifyProofs(uint8 blockType, uint16 blockSize, uint8 blockVersion, uin
 
 The function process the request in the following steps:
 1. Choose the verifying key according to blockType/blockSize/blockVersion.
-2. According to the number of proofs, call the "verify" interface in the third-party library.
+2. According to the number of proofs, call the `verify` interface in the third-party library.
     - For a single proof, verify the proof using [Verifier Contract](https://github.com/HarryR/ethsnarks/blob/master/contracts/Verifier.sol).
     - For a bunch of proofs, verify the proofs using [BatchVerifier Contract](https://github.com/matter-labs-archive/Groth16BatchVerifier/blob/master/BatchedSnarkVerifier/contracts/BatchVerifier.sol)
 
