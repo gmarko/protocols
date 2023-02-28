@@ -23,7 +23,7 @@ abstract contract ILoopringV3 is Claimable
     uint    public totalStake;
     address public blockVerifierAddress;
     uint    public forcedWithdrawalFee;
-    uint8   public protocolFeeBips;
+    uint16  public protocolFeeBips;
     
 
     address payable public protocolFeeVault;
@@ -56,7 +56,7 @@ abstract contract ILoopringV3 is Claimable
     ///      Warning: these new values will be used by existing and
     ///      new Loopring exchanges.
     function updateProtocolFeeSettings(
-        uint8 _protocolFeeBips
+        uint16 _protocolFeeBips
         )
         external
         virtual;
@@ -116,6 +116,6 @@ abstract contract ILoopringV3 is Claimable
         virtual
         view
         returns (
-            uint8 feeBips
+            uint16 feeBips
         );
 }

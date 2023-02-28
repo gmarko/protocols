@@ -144,9 +144,9 @@ This statement file describes all the gadgets of the circuit, including input pa
 - NUM_BITS_STORAGEID = 32
 - NUM_BITS_TIMESTAMP = 32
 - NUM_BITS_NONCE = 32
-- NUM_BITS_BIPS = 12
+- NUM_BITS_BIPS = 16
 - NUM_BITS_BIPS_DA = 6
-- NUM_BITS_PROTOCOL_FEE_BIPS = 8
+- NUM_BITS_PROTOCOL_FEE_BIPS = 16
 - NUM_BITS_TYPE = 8
 - NUM_STORAGE_SLOTS = 16384
 - NUM_MARKETS_PER_BLOCK = 16
@@ -2171,7 +2171,7 @@ such that the following conditions hold:
 - orderOffset_bits = orderOffset_packed
 - maxLevel_bits = maxLevel_packed
 
-- hash = PoseidonHash_t18f6p53(
+- hash = PoseidonHash_t19f6p53(
   exchange,
   storageID,
   accountID,
@@ -2180,10 +2180,11 @@ such that the following conditions hold:
   amountS,
   amountB,
   validUntil,
-  maxFeeBips,
   fillAmountBorS,
   taker,
   feeTokenID,
+  maxFee,
+  feeBips,
   type,
   gridOffset,
   orderOffset,
@@ -3274,7 +3275,7 @@ A valid instance of an AccountUpdate statement assures that given an input of:
 
 - state: State
 - owner: {0..2^NUM_BITS_ADDRESS}
-- accountID: {0..2^NUM_BITS_ACCOUNT}
+- inputAccountID: {0..2^NUM_BITS_ACCOUNT}
 - validUntil: {0..2^NUM_BITS_TIMESTAMP}
 - publicKeyX: F
 - publicKeyY: F
@@ -3282,6 +3283,7 @@ A valid instance of an AccountUpdate statement assures that given an input of:
 - fee: {0..2^NUM_BITS_AMOUNT}
 - maxFee: {0..2^NUM_BITS_AMOUNT}
 - type: {0..2^8}
+- assignedAccountID: {0..2^NUM_BITS_ACCOUNT}
 
 the prover knows an auxiliary input:
 
@@ -3294,7 +3296,7 @@ the prover knows an auxiliary input:
 such that the following conditions hold:
 
 - owner_bits = owner_packed
-- accountID_bits = accountID_packed
+- inputAccountID_bits = inputAccountID_packed
 - validUntil_bits = validUntil_packed
 - feeTokenID_bits = feeTokenID_packed
 - fee_bits = fee_packed
@@ -3302,10 +3304,11 @@ such that the following conditions hold:
 - type_bits = type_packed
 - state.accountA.account.nonce_bits = state.accountA.account.nonce_packed
 - nonce_after = state.accountA.account.nonce + 1
+- assignedAccountID_bits = assignedAccountID_packed
 
 - hash = PoseidonHash_t9f6p53(
     state.exchange,
-    accountID,
+    inputAccountID,
     feeTokenID,
     maxFee,
     publicKeyX,
@@ -3334,13 +3337,14 @@ such that the following conditions hold:
 - output.SIGNATURE_REQUIRED_B = 0
 - output.NUM_CONDITIONAL_TXS = state.numConditionalTransactions + ((type == 0) ? 0 : 1)
 - output.DA = {
-    TransactionType.AccountUpdate,
+    type,
     owner,
-    accountID,
+    inputAccountID,
     feeTokenID,
     fFee,
     compressedPublicKey,
-    nonce
+    nonce,
+    assignedAccountID
   }
 
 Notes:
@@ -3783,6 +3787,12 @@ such that the following conditions hold:
 - OrderMatching(state.timestamp, orderA, orderB, state.accountA.account.owner, state.accountB.account.owner, storageDataA, storageDataB, tradeHistoryWithAutoMarket_A, tradeHistoryWithAutoMarket_B, uFillS_A, uFillS_B)
 - tradingFeeA = FeeCalculator(uFillS_B, orderA.feeBips)
 - tradingFeeB = FeeCalculator(uFillS_A, orderB.feeBips)
+- appointTradingFeeA = orderA.tradingFee
+- appointTradingFeeB = orderB.tradingFee
+- fAppointTradingFeeA = Float32(orderA.tradingFee)
+- fAppointTradingFeeB = Float32(orderB.tradingFee)
+- requireAccuracyTradingFeeA = RequireAccuracyGadget(fAppointTradingFeeA, appointTradingFeeA)
+- requireAccuracyTradingFeeB = RequireAccuracyGadget(fAppointTradingFeeB, appointTradingFeeB)
 - feeMatchA = GasFeeMatchingGadget(orderA.fee, tradeHistoryWithAutoMarket_A.getGasFee(), orderA.maxFee)
 - feeMatchB = GasFeeMatchingGadget(orderB.fee, tradeHistoryWithAutoMarket_B.getGasFee(), orderB.maxFee)
 - resolvedAAuthorX = orderA.useAppKey ? accountA.appKeyPublicKeyX : accountA.publicKeyX
@@ -3836,16 +3846,20 @@ such that the following conditions hold:
 - output.DA = (
   TransactionType.SpotTrade,
   typeTxPad,
-  orderA.storageID,
-  orderB.storageID,
   orderA.accountID,
   orderB.accountID,
   orderA.tokenS,
   orderB.tokenS,
   fillS_A,
   fillS_B,
-  orderA.fillAmountBorS, 0, orderA.feeBips,
-  orderB.fillAmountBorS, 0, orderB.feeBips
+  orderA.feeTokenID,
+  orderA.fFee,
+  orderB.feeTokenID,
+  orderB.fFee,
+  fAppointTradingFeeA,
+  fAppointTradingFeeB,
+  orderA.fillAmountBorS,
+  orderB.fillAmountBorS
   )
 
 ### Description

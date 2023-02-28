@@ -100,6 +100,7 @@ contract("Exchange", (accounts: string[]) => {
           feeTokenID: 0,
           fee: new BN("12300000000000"),
           maxFee: new BN("12300000000000"),
+          tradingFee: new BN("900000000000000"),
           storageID: 0,
           taker: ownerB
         };
@@ -113,11 +114,12 @@ contract("Exchange", (accounts: string[]) => {
             amountS: new BN(web3.utils.toWei("4", "ether")),
             amountB: new BN(web3.utils.toWei("2", "ether")),
             owner: ownerB,
-            feeBips: 0,
+            feeBips: 18,
             fillAmountBorS: false,
             feeTokenID: 0,
             fee: new BN("21000000000000"),
             maxFee: new BN("21000000000000"),
+            tradingFee: new BN("0"),
             storageID: 0
           },
           expected: {
@@ -156,6 +158,7 @@ contract("Exchange", (accounts: string[]) => {
           feeTokenID: 0,
           fee: new BN("12300000000000"),
           maxFee: new BN("12300000000000"),
+          tradingFee: new BN("500000000000000"),
           storageID: 0,
           taker: ownerB
         };
@@ -169,11 +172,12 @@ contract("Exchange", (accounts: string[]) => {
             amountS: new BN(web3.utils.toWei("4", "ether")),
             amountB: new BN(web3.utils.toWei("2", "ether")),
             owner: ownerB,
-            feeBips: 0,
+            feeBips: 18,
             fillAmountBorS: false,
             feeTokenID: 0,
             fee: new BN("21000000000000"),
             maxFee: new BN("21000000000000"),
+            tradingFee: new BN("0"),
             storageID: 0
           },
           expected: {

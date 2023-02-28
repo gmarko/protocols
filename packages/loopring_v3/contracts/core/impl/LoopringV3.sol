@@ -58,15 +58,13 @@ contract LoopringV3 is ILoopringV3, ReentrancyGuard
     }
 
     function updateProtocolFeeSettings(
-        uint8 _protocolFeeBips
+        uint16 _protocolFeeBips
         )
         external
         override
         nonReentrant
         onlyOwner
     {
-        require(_protocolFeeBips <= ExchangeData.MAX_PROTOCOL_FEE_BIPS, "INVALID_PROTOCOL_FEE_BIPS");
-
         protocolFeeBips = _protocolFeeBips;
 
         emit SettingsUpdated(block.timestamp);
@@ -154,7 +152,7 @@ contract LoopringV3 is ILoopringV3, ReentrancyGuard
         override
         view
         returns (
-            uint8 feeBips
+            uint16 feeBips
         )
     {
         return protocolFeeBips;

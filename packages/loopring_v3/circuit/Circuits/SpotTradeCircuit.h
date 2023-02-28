@@ -65,6 +65,13 @@ class SpotTradeCircuit : public BaseTransactionCircuit
     FeeCalculatorGadget feeCalculatorA;
     FeeCalculatorGadget feeCalculatorB;
 
+    DualVariableGadget appointTradingFeeA;
+    DualVariableGadget appointTradingFeeB;
+    FloatGadget fAppointTradingFeeA;
+    FloatGadget fAppointTradingFeeB;
+    RequireAccuracyGadget requireAccuracyTradingFeeA;
+    RequireAccuracyGadget requireAccuracyTradingFeeB;
+
     /* Token Transfers */
     // Actual trade
     TransferGadget fillSA_from_balanceSA_to_balanceBB;
@@ -169,6 +176,29 @@ class SpotTradeCircuit : public BaseTransactionCircuit
             fillS_A.value(),
             orderB.feeBips.packed,
             FMT(prefix, ".feeCalculatorB")),
+          
+          appointTradingFeeA(pb, NUM_BITS_AMOUNT, FMT(prefix, ".appointTradingFeeA")),
+          appointTradingFeeB(pb, NUM_BITS_AMOUNT, FMT(prefix, ".appointTradingFeeB")),
+
+          fAppointTradingFeeA(pb, state.constants, Float32Encoding, FMT(prefix, ".fAppointTradingFeeA")),
+          fAppointTradingFeeB(pb, state.constants, Float32Encoding, FMT(prefix, ".fAppointTradingFeeB")),
+
+          requireAccuracyTradingFeeA(
+            pb,
+            fAppointTradingFeeA.value(),
+            appointTradingFeeA.packed,
+            Float32Accuracy,
+            NUM_BITS_AMOUNT,
+            FMT(prefix, ".requireAccuracyTradingFeeA")),
+          
+          requireAccuracyTradingFeeB(
+            pb,
+            fAppointTradingFeeB.value(),
+            appointTradingFeeB.packed,
+            Float32Accuracy,
+            NUM_BITS_AMOUNT,
+            FMT(prefix, ".requireAccuracyTradingFeeB")),
+
 
           /* Token Transfers */
           // Actual trade
@@ -206,17 +236,19 @@ class SpotTradeCircuit : public BaseTransactionCircuit
             pb,
             balanceB_A,
             balanceC_O,
-            feeCalculatorA.getFee(),
+            // feeCalculatorA.getFee(),
+            fAppointTradingFeeA.value(),
             FMT(prefix, ".protocolFeeA_from_balanceBA_to_balanceAP")),
           protocolFeeB_from_balanceBB_to_balanceBP(
             pb,
             balanceB_B,
             balanceD_O,
-            feeCalculatorB.getFee(),
+            // feeCalculatorB.getFee(),
+            fAppointTradingFeeB.value(),
             FMT(prefix, ".protocolFeeB_from_balanceBB_to_balanceBP")),
 
-          feeMatch_A(pb, state.constants, orderA.fee.packed, tradeHistoryWithAutoMarket_A.getGasFee(), orderA.maxFee.packed, state.constants._0, state.constants._0, isSpotTradeTx.result(), FMT(prefix, ".fee match A")),
-          feeMatch_B(pb, state.constants, orderB.fee.packed, tradeHistoryWithAutoMarket_B.getGasFee(), orderB.maxFee.packed, state.constants._0, state.constants._0, isSpotTradeTx.result(), FMT(prefix, ".fee match B")),
+          feeMatch_A(pb, state.constants, orderA.fee.packed, tradeHistoryWithAutoMarket_A.getGasFee(), orderA.maxFee.packed, feeCalculatorA.getFee(), appointTradingFeeA.packed, isSpotTradeTx.result(), FMT(prefix, ".fee match A")),
+          feeMatch_B(pb, state.constants, orderB.fee.packed, tradeHistoryWithAutoMarket_B.getGasFee(), orderB.maxFee.packed, feeCalculatorB.getFee(), appointTradingFeeB.packed, isSpotTradeTx.result(), FMT(prefix, ".fee match B")),
 
           resolvedAAuthorX(
             pb,
@@ -359,6 +391,12 @@ class SpotTradeCircuit : public BaseTransactionCircuit
         // Calculate fees
         feeCalculatorA.generate_r1cs_witness();
         feeCalculatorB.generate_r1cs_witness();
+        appointTradingFeeA.generate_r1cs_witness(pb, spotTrade.orderA.tradingFee);
+        appointTradingFeeB.generate_r1cs_witness(pb, spotTrade.orderB.tradingFee);
+        fAppointTradingFeeA.generate_r1cs_witness(toFloat(spotTrade.orderA.tradingFee, Float32Encoding));
+        fAppointTradingFeeB.generate_r1cs_witness(toFloat(spotTrade.orderB.tradingFee, Float32Encoding));
+        requireAccuracyTradingFeeA.generate_r1cs_witness();
+        requireAccuracyTradingFeeB.generate_r1cs_witness();
 
         /* Token Transfers */
         // Actual trade
@@ -427,6 +465,13 @@ class SpotTradeCircuit : public BaseTransactionCircuit
         // Calculate fees
         feeCalculatorA.generate_r1cs_constraints();
         feeCalculatorB.generate_r1cs_constraints();
+        appointTradingFeeA.generate_r1cs_constraints();
+        appointTradingFeeB.generate_r1cs_constraints();
+
+        fAppointTradingFeeA.generate_r1cs_constraints();
+        fAppointTradingFeeB.generate_r1cs_constraints();
+        requireAccuracyTradingFeeA.generate_r1cs_constraints();
+        requireAccuracyTradingFeeB.generate_r1cs_constraints();
 
         /* Token Transfers */
         // Actual trade
@@ -470,12 +515,11 @@ class SpotTradeCircuit : public BaseTransactionCircuit
           orderB.feeTokenID.bits,
           orderB.fFee.bits(),
 
+          fAppointTradingFeeA.bits(),
+          fAppointTradingFeeB.bits(),
+
           orderA.fillAmountBorS.bits,
-          orderA.feeBipsMultiplierFlag.bits,
-          orderA.feeBipsData.bits,
           orderB.fillAmountBorS.bits,
-          orderB.feeBipsMultiplierFlag.bits,
-          orderB.feeBipsData.bits
         });
         
     }

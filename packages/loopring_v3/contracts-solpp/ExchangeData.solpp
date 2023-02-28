@@ -40,11 +40,11 @@ library ExchangeData
     struct ProtocolFeeData
     {
         uint32 syncedAt; // only valid before 2105 (85 years to go)
-        uint8  protocolFeeBips;
-        uint8  previousProtocolFeeBips;
+        uint16 protocolFeeBips;
+        uint16 previousProtocolFeeBips;
 
         uint32 executeTimeOfNextProtocolFeeBips; 
-        uint8  nextProtocolFeeBips;
+        uint16 nextProtocolFeeBips;
     }
 
     // General auxiliary data for each conditional transaction
@@ -113,7 +113,6 @@ library ExchangeData
         uint TX_DATA_AVAILABILITY_SIZE;
         uint MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND;
         uint MAX_FORCED_WITHDRAWAL_FEE;
-        uint MAX_PROTOCOL_FEE_BIPS;
         uint DEFAULT_PROTOCOL_FEE_BIPS;
     }
 
@@ -164,8 +163,7 @@ library ExchangeData
 
     uint public constant MAX_FORCED_WITHDRAWAL_FEE = 0.25 ether;
 
-    uint8 public constant MAX_PROTOCOL_FEE_BIPS = 100; 
-    uint8 public constant DEFAULT_PROTOCOL_FEE_BIPS = 18; 
+    uint16 public constant DEFAULT_PROTOCOL_FEE_BIPS = 18; 
 
     struct AccountLeaf
     {

@@ -45,19 +45,12 @@ class OrderGadget : public GadgetT
 
     DualVariableGadget feeBips;
 
-    DualVariableGadget feeBipsMultiplierFlag;
-    DualVariableGadget feeBipsData;
-
     // Checks
     RequireLeqGadget feeBips_leq_maxFeeBips;
     RequireLeqGadget fee_leq_maxFee;
     IfThenRequireNotEqualGadget tokenS_neq_tokenB;
     IfThenRequireNotEqualGadget amountS_notZero;
     IfThenRequireNotEqualGadget amountB_notZero;
-    // Fee checks
-    TernaryGadget feeMultiplier;
-    UnsafeMulGadget decodedFeeBips;
-    RequireEqualGadget feeBipsEqualsDecodedFeeBips;
     
     // AutoMarket: type == 6 or 7, normal order type == 0
     DualVariableGadget type;
@@ -96,9 +89,6 @@ class OrderGadget : public GadgetT
 
           feeBips(pb, NUM_BITS_BIPS, FMT(prefix, ".feeBips")),
 
-          feeBipsMultiplierFlag(pb, 1, FMT(prefix, ".feeBipsMultiplierFlag")),
-          feeBipsData(pb, NUM_BITS_BIPS_DA, FMT(prefix, ".feeBipsData")),
-
           type(pb, NUM_BITS_TYPE, FMT(prefix, ".type")),
           level(pb, NUM_BITS_AUTOMARKET_LEVEL, FMT(prefix, ".level")),
           gridOffset(pb, NUM_BITS_AMOUNT, FMT(prefix, ".gridOffset")),
@@ -115,20 +105,6 @@ class OrderGadget : public GadgetT
           tokenS_neq_tokenB(pb, isNormalOrder, tokenS.packed, tokenB.packed, FMT(prefix, ".tokenS != tokenB")),
           amountS_notZero(pb, isNormalOrder, amountS.packed, constants._0, FMT(prefix, ".amountS != 0")),
           amountB_notZero(pb, isNormalOrder, amountB.packed, constants._0, FMT(prefix, ".amountB != 0")),
-          // Fee checks
-          // feebips = feeBipsData * (feeBipsMultiplierFlag =1 ? 50: 1)
-          feeMultiplier(
-            pb,
-            feeBipsMultiplierFlag.packed,
-            constants.feeMultiplier,
-            constants._1,
-            FMT(prefix, ".feeMultiplier")),
-          decodedFeeBips(pb, feeBipsData.packed, feeMultiplier.result(), FMT(prefix, ".decodedFeeBips")),
-          feeBipsEqualsDecodedFeeBips(
-            pb,
-            feeBips.packed,
-            decodedFeeBips.result(),
-            FMT(prefix, ".feeBipsEqualsDecodedFeeBips")),
 
           // require fee <= maxFee
           fee_leq_maxFee(pb, fee.packed, maxFee.packed, NUM_BITS_AMOUNT, FMT(prefix, ".fee <= maxFee")),
@@ -167,28 +143,11 @@ class OrderGadget : public GadgetT
 
         feeBips.generate_r1cs_witness(pb, order.feeBips);
 
-        // Use the fee multiplier if necessary
-        if (toBigInt(order.feeBips) >= 64 /*2**NUM_BITS_BIPS_DA*/)
-        {
-            feeBipsMultiplierFlag.generate_r1cs_witness(pb, ethsnarks::FieldT(1));
-            feeBipsData.generate_r1cs_witness(
-              pb, ethsnarks::FieldT((toBigInt(order.feeBips) / FEE_MULTIPLIER).to_int()));
-        }
-        else
-        {
-            feeBipsMultiplierFlag.generate_r1cs_witness(pb, ethsnarks::FieldT(0));
-            feeBipsData.generate_r1cs_witness(pb, order.feeBips);
-        }
-
         // Checks
         feeBips_leq_maxFeeBips.generate_r1cs_witness();
         tokenS_neq_tokenB.generate_r1cs_witness();
         amountS_notZero.generate_r1cs_witness();
         amountB_notZero.generate_r1cs_witness();
-        // Fee checks
-        feeMultiplier.generate_r1cs_witness();
-        decodedFeeBips.generate_r1cs_witness();
-        feeBipsEqualsDecodedFeeBips.generate_r1cs_witness();
 
         // split trading fee and gas fee
         feeTokenID.generate_r1cs_witness(pb, order.feeTokenID);
@@ -226,18 +185,11 @@ class OrderGadget : public GadgetT
 
         feeBips.generate_r1cs_constraints(true);
 
-        feeBipsMultiplierFlag.generate_r1cs_constraints(true);
-        feeBipsData.generate_r1cs_constraints(true);
-
         // Checks
         feeBips_leq_maxFeeBips.generate_r1cs_constraints();
         tokenS_neq_tokenB.generate_r1cs_constraints();
         amountS_notZero.generate_r1cs_constraints();
         amountB_notZero.generate_r1cs_constraints();
-        // Fee checks
-        feeMultiplier.generate_r1cs_constraints();
-        decodedFeeBips.generate_r1cs_constraints();
-        feeBipsEqualsDecodedFeeBips.generate_r1cs_constraints();
 
         feeTokenID.generate_r1cs_constraints(true);
         fee.generate_r1cs_constraints(true);
@@ -935,6 +887,7 @@ class AutoMarketOrderCheck : public GadgetT
     DualVariableGadget amountB;
     DualVariableGadget feeTokenID;
     DualVariableGadget maxFee;
+    DualVariableGadget feeBips;
 
     DualVariableGadget validUntil;
     DualVariableGadget fillAmountBorS;
@@ -965,6 +918,7 @@ class AutoMarketOrderCheck : public GadgetT
     IfThenRequireEqualGadget gridOffsetEqual;
     IfThenRequireEqualGadget orderOffsetEqual;
     IfThenRequireEqualGadget maxLevelEqual;
+    IfThenRequireEqualGadget feeBipsEqual;
     IfThenRequireEqualGadget useAppKeyEqual;
 
     EqualGadget tokenSSEqual;
@@ -993,7 +947,7 @@ class AutoMarketOrderCheck : public GadgetT
     TernaryGadget hashAmountB;
     TernaryGadget hashFillAmountBorS;
 
-    Poseidon_17 hash;
+    Poseidon_18 hash;
 
     AutoMarketOrderCheck(
       ProtoboardT &pb,
@@ -1013,6 +967,7 @@ class AutoMarketOrderCheck : public GadgetT
           validUntil(pb, NUM_BITS_TIMESTAMP, FMT(prefix, ".validUntil")),
           feeTokenID(pb, NUM_BITS_TOKEN, FMT(prefix, ".feeTokenID")),
           maxFee(pb, NUM_BITS_AMOUNT, FMT(prefix, ".maxFee")),
+          feeBips(pb, NUM_BITS_BIPS, FMT(prefix, ".feeBips")),
           fillAmountBorS(pb, 1, FMT(prefix, ".fillAmountBorS")),
           taker(make_variable(pb, FMT(prefix, ".taker"))),
 
@@ -1041,6 +996,7 @@ class AutoMarketOrderCheck : public GadgetT
           gridOffsetEqual(pb, isAutoMarketOrder.result(), gridOffset.packed, orderGadget.gridOffset.packed, FMT(prefix, ".gridOffsetEqual")),
           orderOffsetEqual(pb, isAutoMarketOrder.result(), orderOffset.packed, orderGadget.orderOffset.packed, FMT(prefix, ".orderOffsetEqual")),
           maxLevelEqual(pb, isAutoMarketOrder.result(), maxLevel.packed, orderGadget.maxLevel.packed, FMT(prefix, ".maxLevelEqual")),
+          feeBipsEqual(pb, isAutoMarketOrder.result(), feeBips.packed, orderGadget.feeBips.packed, FMT(prefix, ".feeBipsEqual")),
           useAppKeyEqual(pb, isAutoMarketOrder.result(), useAppKey.packed, orderGadget.useAppKey.packed, FMT(prefix, ".useAppKeyEqual")),
 
           tokenSSEqual(pb, tokenS.packed, orderGadget.tokenS.packed, FMT(prefix, ".tokenSSEqual")),
@@ -1084,6 +1040,7 @@ class AutoMarketOrderCheck : public GadgetT
                orderGadget.taker,
                orderGadget.feeTokenID.packed,
                orderGadget.maxFee.packed,
+               orderGadget.feeBips.packed,
                orderGadget.type.packed,
                orderGadget.gridOffset.packed,
                orderGadget.orderOffset.packed,
@@ -1113,6 +1070,7 @@ class AutoMarketOrderCheck : public GadgetT
       gridOffset.generate_r1cs_witness(pb, autoMarketOrder.gridOffset);
       orderOffset.generate_r1cs_witness(pb, autoMarketOrder.orderOffset);
       maxLevel.generate_r1cs_witness(pb, autoMarketOrder.maxLevel);
+      feeBips.generate_r1cs_witness(pb, autoMarketOrder.feeBips);
       useAppKey.generate_r1cs_witness(pb, autoMarketOrder.useAppKey);
 
       isAutoMarketBuyOrder.generate_r1cs_witness();
@@ -1134,6 +1092,7 @@ class AutoMarketOrderCheck : public GadgetT
       gridOffsetEqual.generate_r1cs_witness();
       orderOffsetEqual.generate_r1cs_witness();
       maxLevelEqual.generate_r1cs_witness();
+      feeBipsEqual.generate_r1cs_witness();
       useAppKeyEqual.generate_r1cs_witness();
 
       tokenSSEqual.generate_r1cs_witness();
@@ -1179,6 +1138,7 @@ class AutoMarketOrderCheck : public GadgetT
       gridOffset.generate_r1cs_constraints(true);
       orderOffset.generate_r1cs_constraints(true);
       maxLevel.generate_r1cs_constraints(true);
+      feeBips.generate_r1cs_constraints(true);
       useAppKey.generate_r1cs_constraints(true);
 
       isAutoMarketBuyOrder.generate_r1cs_constraints();
@@ -1200,6 +1160,7 @@ class AutoMarketOrderCheck : public GadgetT
       gridOffsetEqual.generate_r1cs_constraints();
       orderOffsetEqual.generate_r1cs_constraints();
       maxLevelEqual.generate_r1cs_constraints();
+      feeBipsEqual.generate_r1cs_constraints();
       useAppKeyEqual.generate_r1cs_constraints();
 
       tokenSSEqual.generate_r1cs_constraints();

@@ -36,7 +36,8 @@ using Poseidon_13 = Poseidon_gadget_T<14, 1, 6, 53, 13, 1>;
 using Poseidon_14 = Poseidon_gadget_T<15, 1, 6, 53, 14, 1>;
 using Poseidon_15 = Poseidon_gadget_T<16, 1, 6, 53, 15, 1>;
 using Poseidon_16 = Poseidon_gadget_T<17, 1, 6, 53, 16, 1>;
-using Poseidon_17 = Poseidon_gadget_T<18, 1, 6, 53, 17, 1>;
+// using Poseidon_17 = Poseidon_gadget_T<18, 1, 6, 53, 17, 1>;
+using Poseidon_18 = Poseidon_gadget_T<19, 1, 6, 53, 18, 1>;
 
 // require(A == B)
 static void requireEqual( //

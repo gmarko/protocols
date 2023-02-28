@@ -38,8 +38,8 @@ library ExchangeBlocks
     );
 
     event ProtocolFeesUpdated(
-        uint8 protocolFeeBips,
-        uint8 previousProtocolFeeBips
+        uint16 protocolFeeBips,
+        uint16 previousProtocolFeeBips
     );
 
     function submitBlocks(
@@ -302,14 +302,14 @@ library ExchangeBlocks
 
     function validateAndSyncProtocolFees(
         ExchangeData.State storage S,
-        uint8 protocolFeeBips
+        uint16 protocolFeeBips
         )
         private
         returns (bool)
     {
         ExchangeData.ProtocolFeeData memory data = S.protocolFeeData;
 
-        uint8 protocolFeeBipsInLoopring = S.loopring.getProtocolFeeValues();
+        uint16 protocolFeeBipsInLoopring = S.loopring.getProtocolFeeValues();
         if (data.nextProtocolFeeBips != protocolFeeBipsInLoopring ) {
             data.executeTimeOfNextProtocolFeeBips = uint32(block.timestamp + ExchangeData.MIN_AGE_PROTOCOL_FEES_UNTIL_UPDATED);
             data.nextProtocolFeeBips = protocolFeeBipsInLoopring;

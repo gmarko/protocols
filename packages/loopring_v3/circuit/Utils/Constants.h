@@ -30,9 +30,11 @@ namespace Loopring
     static const unsigned int NUM_BITS_STORAGEID = 32;
     static const unsigned int NUM_BITS_TIMESTAMP = 32;
     static const unsigned int NUM_BITS_NONCE = 32;
-    static const unsigned int NUM_BITS_BIPS = 12; // ceil(log2(2**NUM_BITS_BIPS_DA * FEE_MULTIPLIER))
+    // static const unsigned int NUM_BITS_BIPS = 12; // ceil(log2(2**NUM_BITS_BIPS_DA * FEE_MULTIPLIER))
+    static const unsigned int NUM_BITS_BIPS = 16; // ceil(log2(2**NUM_BITS_BIPS_DA * FEE_MULTIPLIER))
     static const unsigned int NUM_BITS_BIPS_DA = 6;
-    static const unsigned int NUM_BITS_PROTOCOL_FEE_BIPS = 8;
+    // static const unsigned int NUM_BITS_PROTOCOL_FEE_BIPS = 8;
+    static const unsigned int NUM_BITS_PROTOCOL_FEE_BIPS = 16;
     static const unsigned int NUM_BITS_TYPE = 8;
     static const unsigned int NUM_STORAGE_SLOTS = 16384; // 2**NUM_BITS_STORAGE_ADDRESS
     static const unsigned int NUM_MARKETS_PER_BLOCK = 16;

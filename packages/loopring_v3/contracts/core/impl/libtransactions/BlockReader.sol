@@ -14,7 +14,7 @@ library BlockReader {
     using BlockReader       for ExchangeData.Block;
     using BytesUtil         for bytes;
 
-    uint public constant OFFSET_TO_TRANSACTIONS = 20 + 32 + 32 + 32 + 32 + 4 + 1 + 4 + 4 + 2 + 2 + 2;
+    uint public constant OFFSET_TO_TRANSACTIONS = 20 + 32 + 32 + 32 + 32 + 4 + 2 + 4 + 4 + 2 + 2 + 2;
 
 
     struct BlockHeader
@@ -25,7 +25,7 @@ library BlockReader {
         bytes32 merkleAssetRootBefore;
         bytes32 merkleAssetRootAfter;
         uint32  timestamp;
-        uint8   protocolFeeBips;
+        uint16  protocolFeeBips;
 
         uint32  numConditionalTransactions;
         uint32  operatorAccountID;
@@ -58,8 +58,8 @@ library BlockReader {
         header.timestamp = _blockData.toUint32(offset);
         offset += 4;
 
-        header.protocolFeeBips = _blockData.toUint8(offset);
-        offset += 1;
+        header.protocolFeeBips = _blockData.toUint16(offset);
+        offset += 2;
 
         header.numConditionalTransactions = _blockData.toUint32(offset);
         offset += 4;

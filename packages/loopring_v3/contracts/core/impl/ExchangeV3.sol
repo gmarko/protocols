@@ -196,7 +196,6 @@ contract ExchangeV3 is IExchangeV3, ReentrancyGuard
             uint(ExchangeData.TX_DATA_AVAILABILITY_SIZE),
             uint(ExchangeData.MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND),
             uint(ExchangeData.MAX_FORCED_WITHDRAWAL_FEE),
-            uint(ExchangeData.MAX_PROTOCOL_FEE_BIPS),
             uint(ExchangeData.DEFAULT_PROTOCOL_FEE_BIPS)
         );
     }
@@ -647,10 +646,10 @@ contract ExchangeV3 is IExchangeV3, ReentrancyGuard
         view
         returns (
             uint32 syncedAt,
-            uint8  protocolFeeBips,
-            uint8  previousProtocolFeeBips,
+            uint16 protocolFeeBips,
+            uint16 previousProtocolFeeBips,
             uint32 executeTimeOfNextProtocolFeeBips,
-            uint32 nextProtocolFeeBips
+            uint16 nextProtocolFeeBips
         )
     {
         syncedAt = state.protocolFeeData.syncedAt;

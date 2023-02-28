@@ -51,7 +51,7 @@ contract("Exchange", (accounts: string[]) => {
       }
 
       // 2. set newProtocolfeeBips to loopring
-      const newProtocolfeeBips = 80;
+      const newProtocolfeeBips = 8000;
       await loopring.updateProtocolFeeSettings(newProtocolfeeBips, {
         from: exchangeTestUtil.testContext.deployer
       });

@@ -758,14 +758,19 @@ class State(object):
             '''
             tradingFee = (amountB * protocolFeeBips) // 10000
             '''
-            (fee_A) = self.calculate.calculateFees(
+            (calculate_fee_A) = self.calculate.calculateFees(
                 fillA.B,
                 ring.orderA.feeBips
             )
-            (fee_B) = self.calculate.calculateFees(
+            (calculate_fee_B) = self.calculate.calculateFees(
                 fillB.B,
                 ring.orderB.feeBips
             )
+            appointed_fee_A = int(roundToFloatValue(int(ring.orderA.tradingFee), Float32Encoding))
+            appointed_fee_B = int(roundToFloatValue(int(ring.orderB.tradingFee), Float32Encoding))
+
+            assert int(appointed_fee_A) <= int(calculate_fee_A), "appointed_fee_A must less than calculate_fee_A"
+            assert int(appointed_fee_B) <= int(calculate_fee_B), "appointed_fee_B must less than calculate_fee_B"
 
             newState.signatureA = ring.orderA.signature
             newState.signatureB = ring.orderB.signature
@@ -777,7 +782,7 @@ class State(object):
             newState.TXV_BALANCE_A_S_BALANCE = -fillA.S
 
             newState.TXV_BALANCE_A_B_ADDRESS = ring.orderA.tokenB
-            newState.TXV_BALANCE_A_B_BALANCE = fillA.B - fee_A
+            newState.TXV_BALANCE_A_B_BALANCE = fillA.B - appointed_fee_A
 
             newState.TXV_STORAGE_A_ADDRESS = ring.orderA.storageID
             newState.TXV_STORAGE_A_TOKENSID = ring.orderA.tokenS
@@ -796,7 +801,7 @@ class State(object):
             newState.TXV_BALANCE_B_S_BALANCE = -fillB.S
 
             newState.TXV_BALANCE_B_B_ADDRESS = ring.orderB.tokenB
-            newState.TXV_BALANCE_B_B_BALANCE = fillB.B - fee_B
+            newState.TXV_BALANCE_B_B_BALANCE = fillB.B - appointed_fee_B
 
             newState.TXV_STORAGE_B_ADDRESS = ring.orderB.storageID
             newState.TXV_STORAGE_B_TOKENSID = ring.orderB.tokenS
@@ -820,8 +825,8 @@ class State(object):
             newState.TXV_BALANCE_A_FEE_BALANCE = -roundToFloatValue(ring.orderA.fee, Float32Encoding)
             newState.TXV_BALANCE_B_FEE_BALANCE = -roundToFloatValue(ring.orderB.fee, Float32Encoding)
 
-            newState.balanceDeltaC_O = fee_A
-            newState.balanceDeltaD_O = fee_B
+            newState.balanceDeltaC_O = appointed_fee_A
+            newState.balanceDeltaD_O = appointed_fee_B
             newState.balanceDeltaC_O_Address = newState.TXV_BALANCE_B_S_ADDRESS
             newState.balanceDeltaD_O_Address = newState.TXV_BALANCE_A_S_ADDRESS
 

@@ -56,15 +56,10 @@ contract("Loopring", (accounts: string[]) => {
       await checkProtocolFees(feeBips);
     });
 
-    it("should not be able to set too big protocol fee", async () => {
-      console.log("MAX_PROTOCOL_FEE_BIPS", exchangeTestUtil.MAX_PROTOCOL_FEE_BIPS.toString(10));
-
-      await expectThrow(
-        loopring.updateProtocolFeeSettings(
-          exchangeTestUtil.MAX_PROTOCOL_FEE_BIPS.add(new BN(1)), // invalid fee
-          { from: exchangeTestUtil.testContext.deployer }
-        ),
-        "INVALID_PROTOCOL_FEE_BIPS"
+    it("should be able to set big protocol fee", async () => {
+      loopring.updateProtocolFeeSettings(
+        new BN(2000), // valid fee 20%
+        { from: exchangeTestUtil.testContext.deployer }
       );
     });
 

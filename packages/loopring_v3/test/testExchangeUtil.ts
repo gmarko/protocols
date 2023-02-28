@@ -446,7 +446,6 @@ export class ExchangeTestUtil {
   public TX_DATA_AVAILABILITY_SIZE: number;
   public MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND: number;
   public MAX_FORCED_WITHDRAWAL_FEE: BN;
-  public MAX_PROTOCOL_FEE_BIPS: BN;
   public DEFAULT_PROTOCOL_FEE_BIPS: BN;
 
   public tokenAddressToIDMap = new Map<string, number>();
@@ -530,7 +529,6 @@ export class ExchangeTestUtil {
       constants.MAX_AGE_DEPOSIT_UNTIL_WITHDRAWABLE_UPPERBOUND
     ).toNumber();
     this.MAX_FORCED_WITHDRAWAL_FEE = new BN(constants.MAX_FORCED_WITHDRAWAL_FEE);
-    this.MAX_PROTOCOL_FEE_BIPS = new BN(constants.MAX_PROTOCOL_FEE_BIPS);
     this.DEFAULT_PROTOCOL_FEE_BIPS = new BN(constants.DEFAULT_PROTOCOL_FEE_BIPS);
 
     await this.loopringV3.updateProtocolFeeSettings(this.DEFAULT_PROTOCOL_FEE_BIPS, {
@@ -887,7 +885,7 @@ export class ExchangeTestUtil {
     }
     const account = this.accounts[this.exchangeId][order.accountID];
 
-    const hasher = Poseidon.createHash(18, 6, 53);
+    const hasher = Poseidon.createHash(19, 6, 53);
     const inputs = [
       order.exchange,
       order.storageID,
@@ -901,6 +899,7 @@ export class ExchangeTestUtil {
       order.taker,
       order.feeTokenID,
       order.maxFee,
+      order.feeBips,
       order.type,
       order.gridOffset,
       order.orderOffset,
@@ -2589,7 +2588,8 @@ export class ExchangeTestUtil {
     bs.addBN(new BN(block.merkleAssetRootBefore, 10), 32);
     bs.addBN(new BN(block.merkleAssetRootAfter, 10), 32);
     bs.addNumber(block.timestamp, 4);
-    bs.addNumber(block.protocolFeeBips, 1);
+    // bs.addNumber(block.protocolFeeBips, 1);
+    bs.addNumber(block.protocolFeeBips, 2);
     bs.addNumber(numConditionalTransactions, 4);
     bs.addNumber(block.operatorAccountID, 4);
     // Deposit、AccountUpdate、Withdraw transaction's count
@@ -2643,15 +2643,22 @@ export class ExchangeTestUtil {
         da.addNumber(orderB.feeTokenID, 4);
         da.addNumber(toFloat(new BN(orderB.fee), Constants.Float16Encoding), 2);
 
+        da.addNumber(toFloat(new BN(orderA.tradingFee), Constants.Float32Encoding), 4);
+        da.addNumber(toFloat(new BN(orderB.tradingFee), Constants.Float32Encoding), 4);
         // 10000000 = 128
-        let limitMask = orderA.fillAmountBorS ? 0b10000000 : 0;
-        let feeData = orderA.feeBips >= 64 ? 64 + orderA.feeBips / Constants.FEE_MULTIPLIER : orderA.feeBips;
-        da.addNumber(limitMask + feeData, 1);
+        // let limitMask = orderA.fillAmountBorS ? 0b10000000 : 0;
+        // let feeData = orderA.feeBips >= 64 ? 64 + orderA.feeBips / Constants.FEE_MULTIPLIER : orderA.feeBips;
+        // da.addNumber(limitMask + feeData, 1);
 
-        limitMask = orderB.fillAmountBorS ? 0b10000000 : 0;
-        // If feepips is greater than 64, it is marked as 1 in the second bit and feepips / 50 in the last 6 bits
-        feeData = orderB.feeBips >= 64 ? 64 + orderB.feeBips / Constants.FEE_MULTIPLIER : orderB.feeBips;
-        da.addNumber(limitMask + feeData, 1);
+        // limitMask = orderB.fillAmountBorS ? 0b10000000 : 0;
+        // // If feepips is greater than 64, it is marked as 1 in the second bit and feepips / 50 in the last 6 bits
+        // feeData = orderB.feeBips >= 64 ? 64 + orderB.feeBips / Constants.FEE_MULTIPLIER : orderB.feeBips;
+        // da.addNumber(limitMask + feeData, 1);
+
+        let limitMaskA = orderA.fillAmountBorS ? 0b10000000 : 0;
+        let limitMaskB = orderB.fillAmountBorS ? 0b01000000 : 0;
+        da.addNumber(limitMaskA + limitMaskB, 1);
+
       } else if (tx.batchSpotTrade || tx.txType === "BatchSpotTrade") {
         console.log("in getBlockData BatchSpotTrade");
         var batchSpotTrade = tx.batchSpotTrade ? tx.batchSpotTrade : tx;

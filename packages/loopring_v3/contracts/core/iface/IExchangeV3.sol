@@ -77,8 +77,8 @@ abstract contract IExchangeV3 is Claimable
     );
 
     event ProtocolFeesUpdated(
-        uint8 protocolFeeBips,
-        uint8 previousProtocolFeeBips
+        uint16 protocolFeeBips,
+        uint16 previousProtocolFeeBips
     );
 
     event TransactionApproved(
@@ -662,10 +662,10 @@ abstract contract IExchangeV3 is Claimable
         view
         returns (
             uint32 syncedAt,
-            uint8 protocolFeeBips,
-            uint8 previousProtocolFeeBips,
+            uint16 protocolFeeBips,
+            uint16 previousProtocolFeeBips,
             uint32 executeTimeOfNextProtocolFeeBips,
-            uint32 nextProtocolFeeBips
+            uint16 nextProtocolFeeBips
         );
 
     /// @dev Gets the domain separator used in this exchange.
